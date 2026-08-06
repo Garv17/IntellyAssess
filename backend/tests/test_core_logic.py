@@ -1,0 +1,230 @@
+"""Tests for the pieces that don't need a live database: randomization stability,
+password hashing, judge output comparison, token claims, and the SQL that the
+auto-save flush depends on."""
+
+from __future__ import annotations
+
+import uuid
+from types import SimpleNamespace
+
+import jwt
+import pytest
+from sqlalchemy.dialects import postgresql
+
+from app.security import (
+    create_access_token,
+    decode_token,
+    generate_password,
+    hash_password,
+    verify_password,
+)
+from app.services import paper, sandbox
+
+
+# --------------------------------------------------------------------- passwords
+
+
+def test_password_round_trip():
+    hashed = hash_password("Student@123")
+    assert verify_password("Student@123", hashed)
+    assert not verify_password("student@123", hashed)
+
+
+def test_verify_rejects_malformed_hash_without_raising():
+    # A corrupted stored hash must read as a failed login, not a 500.
+    assert verify_password("anything", "not-a-bcrypt-hash") is False
+
+
+def test_long_passwords_are_truncated_consistently():
+    # bcrypt ignores bytes past 72; the same prefix must still verify.
+    base = "a" * 80
+    hashed = hash_password(base)
+    assert verify_password("a" * 72, hashed)
+
+
+def test_generated_password_avoids_lookalike_characters():
+    for _ in range(50):
+        assert not set(generate_password()) & set("O0lI1")
+
+
+# ------------------------------------------------------------------------ tokens
+
+
+def test_access_token_carries_attempt_binding():
+    attempt_id = str(uuid.uuid4())
+    token, jti = create_access_token("student-pk", "student", attempt_id=attempt_id)
+    claims = decode_token(token)
+    assert claims["sub"] == "student-pk"
+    assert claims["role"] == "student"
+    assert claims["type"] == "access"
+    assert claims["attempt_id"] == attempt_id
+    assert claims["jti"] == jti
+
+
+def test_tampered_token_is_rejected():
+    token, _ = create_access_token("student-pk", "student")
+    forged = token[:-4] + ("aaaa" if not token.endswith("aaaa") else "bbbb")
+    with pytest.raises(jwt.PyJWTError):
+        decode_token(forged)
+
+
+# ---------------------------------------------------------------- randomization
+
+
+def _fake_exam(randomize_questions=True, randomize_options=False):
+    """Minimal duck-typed exam tree — enough for build_question_order."""
+    section_id = uuid.uuid4()
+    di_group_id = uuid.uuid4()
+
+    def question(order, di_group=None, options=0):
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            order_index=order,
+            di_group_id=di_group,
+            options=[
+                SimpleNamespace(id=uuid.uuid4(), order_index=i) for i in range(options)
+            ],
+        )
+
+    standalone = [question(i, options=4) for i in range(6)]
+    grouped = [question(i, di_group=di_group_id, options=4) for i in range(3)]
+
+    section = SimpleNamespace(
+        id=section_id,
+        order_index=0,
+        title="Section A",
+        instructions=None,
+        questions=standalone + grouped,
+        di_groups=[SimpleNamespace(id=di_group_id, order_index=0)],
+    )
+    return SimpleNamespace(
+        sections=[section],
+        randomize_questions=randomize_questions,
+        randomize_options=randomize_options,
+    )
+
+
+def test_question_order_is_stable_for_the_same_seed():
+    exam = _fake_exam()
+    first = paper.build_question_order(exam, "seed-abc")
+    second = paper.build_question_order(exam, "seed-abc")
+    # Resume-on-refresh depends on this: the same student must see the same paper.
+    assert first == second
+
+
+def test_question_order_differs_across_students():
+    exam = _fake_exam()
+    orders = {
+        str(paper.build_question_order(exam, f"seed-{i}")["sections"][0]["blocks"])
+        for i in range(8)
+    }
+    assert len(orders) > 1
+
+
+def test_di_questions_stay_grouped_after_shuffling():
+    exam = _fake_exam()
+    order = paper.build_question_order(exam, "seed-xyz")
+    blocks = order["sections"][0]["blocks"]
+    di_blocks = [b for b in blocks if b["kind"] == "di_group"]
+    assert len(di_blocks) == 1
+    # All three child questions travel with their stimulus, never scattered.
+    assert len(di_blocks[0]["question_ids"]) == 3
+
+
+def test_every_question_appears_exactly_once():
+    exam = _fake_exam()
+    order = paper.build_question_order(exam, "seed-1")
+    seen: list[str] = []
+    for block in order["sections"][0]["blocks"]:
+        if block["kind"] == "question":
+            seen.append(block["question_id"])
+        else:
+            seen.extend(block["question_ids"])
+    assert len(seen) == 9
+    assert len(set(seen)) == 9
+
+
+def test_option_order_only_recorded_when_enabled():
+    assert paper.build_question_order(_fake_exam(), "s")["sections"][0]["option_order"] == {}
+    shuffled = paper.build_question_order(
+        _fake_exam(randomize_options=True), "s"
+    )["sections"][0]["option_order"]
+    assert len(shuffled) == 9
+    assert all(len(v) == 4 for v in shuffled.values())
+
+
+# ------------------------------------------------------------- judge comparison
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected"),
+    [
+        ("7\n", "7"),
+        ("7", "7\n\n"),
+        ("  7  \n", "  7"),
+        ("1\n2\n3\n", "1\n2\n3"),
+    ],
+)
+def test_normalize_ignores_trailing_whitespace(actual, expected):
+    # A stray newline must not cost a student marks.
+    assert sandbox.normalize(actual) == sandbox.normalize(expected)
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected"),
+    [("7", "8"), ("1 2", "1  2"), ("12", "1\n2")],
+)
+def test_normalize_preserves_meaningful_differences(actual, expected):
+    assert sandbox.normalize(actual) != sandbox.normalize(expected)
+
+
+def test_every_declared_language_has_a_runnable_spec():
+    for name, spec in sandbox.LANGUAGES.items():
+        assert spec.image and spec.filename and spec.run_cmd, name
+
+
+# --------------------------------------------------------------- auto-save SQL
+
+
+def test_answer_upsert_compiles_to_on_conflict_update():
+    """The flush task's correctness rests on this being an idempotent upsert against
+    the (attempt_id, question_id) constraint."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.models import Answer
+
+    stmt = insert(Answer).values(
+        [
+            {
+                "id": uuid.uuid4(),
+                "attempt_id": uuid.uuid4(),
+                "question_id": uuid.uuid4(),
+                "selected_option_id": None,
+                "code_text": None,
+                "language": None,
+                "is_marked_for_review": False,
+                "score": 0.0,
+            }
+        ]
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_answer_attempt_question",
+        set_={"code_text": stmt.excluded.code_text},
+    )
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT ON CONSTRAINT uq_answer_attempt_question DO UPDATE" in sql
+
+
+def test_attempt_uniqueness_constraint_exists():
+    """One-attempt-per-student is enforced by the database, not application code."""
+    from app.models import ExamAttempt
+
+    names = {c.name for c in ExamAttempt.__table__.constraints if c.name}
+    assert "uq_attempt_exam_student" in names
+
+
+def test_student_serializers_never_expose_answer_keys():
+    from app.schemas import CodingProblemOut, OptionOut, QuestionOut
+
+    for model in (OptionOut, QuestionOut, CodingProblemOut):
+        assert "is_correct" not in model.model_fields

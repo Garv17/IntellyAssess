@@ -1,0 +1,23 @@
+# Floors rather than exact pins so the project builds on Python 3.11 through 3.14.
+# Pin exactly (pip freeze > requirements.lock.txt) before a production exam.
+fastapi>=0.115.6
+uvicorn[standard]>=0.34.0
+# [email] provides the validator EmailStr needs for admin/student email fields.
+pydantic[email]>=2.10.4
+pydantic-settings>=2.7.0
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+psycopg[binary]>=3.2.10
+alembic>=1.14.0
+redis>=5.2.1
+celery>=5.4.0
+# bcrypt is used directly; passlib is unmaintained and its bcrypt backend breaks
+# on recent bcrypt releases.
+bcrypt>=4.2.1
+pyjwt>=2.10.1
+python-multipart>=0.0.20
+openpyxl>=3.1.5
+docker>=7.1.0
+httpx>=0.28.1
+pytest>=8.3.4
+pytest-asyncio>=0.25.0
