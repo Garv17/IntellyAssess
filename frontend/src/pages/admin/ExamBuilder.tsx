@@ -34,7 +34,7 @@ type Tab = 'mcq' | 'di' | 'coding' | 'bulk' | 'bank';
 
 // Must match the keys in backend/app/services/sandbox.py's LANGUAGES dict — that's
 // what actually knows how to compile/run each one.
-const CODING_LANGUAGES = ['python', 'javascript', 'c', 'cpp', 'java', 'csharp', 'php', 'sql'];
+const CODING_LANGUAGES = ['python', 'javascript', 'c', 'cpp', 'java', 'sql'];
 
 // Test cases run through a real program (or, for SQL, a real database) — not a
 // structured LeetCode-style function call. This is the single most common way a
@@ -208,7 +208,7 @@ export default function ExamBuilder() {
             {(
               [
                 { key: 'mcq', label: 'MCQ', icon: <ListChecks size={15} /> },
-                { key: 'di', label: 'Data Interpretation', icon: <Table2 size={15} /> },
+                { key: 'di', label: 'Grouped Questions', icon: <Table2 size={15} /> },
                 { key: 'coding', label: 'Coding', icon: <Code2 size={15} /> },
                 { key: 'bulk', label: 'Bulk upload', icon: <Upload size={15} /> },
                 { key: 'bank', label: 'Question Bank', icon: <BookMarked size={15} /> },
@@ -517,7 +517,7 @@ function ExistingQuestions({
       await api.deleteDiGroup(id);
       await reload();
       onChanged();
-      toast.success('DI set deleted');
+      toast.success('Question group deleted');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
     } finally {
@@ -613,9 +613,9 @@ function ExistingQuestions({
       )}
       {pendingDeleteGroup && (
         <ConfirmDialog
-          title="Delete this DI set?"
+          title="Delete this question group?"
           description="This deletes the stimulus and all its questions. This cannot be undone."
-          confirmLabel="Delete set"
+          confirmLabel="Delete group"
           busy={deleteBusy}
           onConfirm={() => void deleteGroup(pendingDeleteGroup)}
           onCancel={() => setPendingDeleteGroup(null)}
@@ -1046,7 +1046,7 @@ function DiGroupRow({ group, dragProps, wrapClass, onSaved, onDeleteGroup, onDel
       setEditingMeta(false);
       onSaved();
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to update DI set');
+      onError(err instanceof Error ? err.message : 'Failed to update question group');
     }
   };
 
@@ -1057,7 +1057,7 @@ function DiGroupRow({ group, dragProps, wrapClass, onSaved, onDeleteGroup, onDel
           <GripVertical size={16} />
         </span>
         <ChevronRight size={15} className={`chevron ${open ? 'open' : ''}`} />
-        <span className="tag badge-info">di set</span>
+        <span className="tag badge-info">group</span>
         <strong className="grow">{group.title}</strong>
         <span className="muted small">{group.questions.length} question{group.questions.length === 1 ? '' : 's'}</span>
         <button
@@ -1103,7 +1103,7 @@ function DiGroupRow({ group, dragProps, wrapClass, onSaved, onDeleteGroup, onDel
               </label>
               {imageUrl && (
                 <div className="preview">
-                  <img src={imageUrl} alt="DI stimulus preview" />
+                  <img src={imageUrl} alt="Group stimulus preview" />
                 </div>
               )}
               <label>
@@ -1111,7 +1111,7 @@ function DiGroupRow({ group, dragProps, wrapClass, onSaved, onDeleteGroup, onDel
                 <textarea value={passage} onChange={(e) => setPassage(e.target.value)} rows={4} />
               </label>
               <div className="form-actions">
-                <button className="btn primary">Save set</button>
+                <button className="btn primary">Save group</button>
               </div>
             </form>
           )}
@@ -1275,16 +1275,16 @@ function DiForm({ sectionId, onDone, onError }: FormProps) {
       setImageUrl('');
       setQuestions([{ body: '', explanation: '', options: ['', '', '', ''], correct: 0, tags: [], difficulty: null }]);
       onDone();
-      toast.success('DI set added');
+      toast.success('Question group added');
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to add DI set');
+      onError(err instanceof Error ? err.message : 'Failed to add question group');
     }
   };
 
   return (
     <form onSubmit={submit} className="stack">
       <p className="muted small">
-        A DI set is one stimulus plus its questions. They are created together and stay
+        A question group is one stimulus plus its questions. They are created together and stay
         grouped for every student, even when question order is randomized.
       </p>
       <label>
@@ -1305,7 +1305,7 @@ function DiForm({ sectionId, onDone, onError }: FormProps) {
       </label>
       {imageUrl && (
         <div className="preview">
-          <img src={imageUrl} alt="DI stimulus preview" />
+          <img src={imageUrl} alt="Group stimulus preview" />
         </div>
       )}
       <label>

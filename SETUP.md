@@ -63,8 +63,8 @@ Skip this and the first "Run code" click hangs ~60s while Docker downloads it.
 docker pull python:3.11-alpine
 ```
 
-Add `node:20-alpine`, `gcc:13`, or `eclipse-temurin:21-jdk-alpine` only if you'll use
-those languages.
+Add `node:20-alpine`, `gcc:13`, `eclipse-temurin:21-jdk-alpine`, or `nouchka/sqlite3:latest` only if
+you'll use those languages.
 
 ## 7. Sit the demo exam
 

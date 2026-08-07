@@ -226,7 +226,7 @@ class ExamCreate(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     randomize_questions: bool = True
-    randomize_options: bool = False
+    randomize_options: bool = True
     cohort: str | None = None
     pass_percentage: float | None = Field(default=None, ge=0, le=100)
 
@@ -303,7 +303,7 @@ class DIGroupCreate(BaseModel):
 
 # Must match the keys in app.services.sandbox.LANGUAGES — that's what actually
 # knows how to compile/run each one.
-CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "csharp", "php", "sql"]
+CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "sql"]
 
 
 class TestCaseCreate(BaseModel):

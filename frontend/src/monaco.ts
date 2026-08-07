@@ -19,8 +19,6 @@ import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
 import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution';
 import 'monaco-editor/esm/vs/basic-languages/java/java.contribution';
 import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution';
-import 'monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution';
-import 'monaco-editor/esm/vs/basic-languages/php/php.contribution';
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution';
 
 self.MonacoEnvironment = {

@@ -116,7 +116,7 @@ class Exam(Base, TimestampMixin):
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    randomize_options: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    randomize_options: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     # NULL => no pass/fail badge is shown anywhere; admin hasn't set a threshold
     pass_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)

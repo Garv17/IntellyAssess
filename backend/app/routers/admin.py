@@ -1507,30 +1507,19 @@ def _percentage(attempt: ExamAttempt) -> float | None:
     return round(attempt.total_score / attempt.max_score * 100, 2)
 
 
-@router.get("/attempts", response_model=AttemptListPage)
-async def list_attempts(
-    admin: AdminDep,
-    db: DbDep,
-    search: str | None = None,
-    cohort: str | None = None,
-    exam_id: uuid.UUID | None = None,
-    status_filter: Annotated[
-        Literal["completed", "pending"] | None, Query(alias="status")
-    ] = None,
-    min_score: float | None = None,
-    max_score: float | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
-    sort: Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"] = (
-        "submitted_at"
-    ),
-    order: Literal["asc", "desc"] = "desc",
-    page: int = 1,
-    page_size: int = 25,
-) -> AttemptListPage:
-    """Cross-exam attempt list backing the Student Details dashboard. 'Completed' means
-    any terminal status (submitted/auto_submitted/expired); 'Pending' means still in
-    progress."""
+AttemptSort = Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"]
+
+
+def _attempt_conditions(
+    search: str | None,
+    cohort: str | None,
+    exam_id: uuid.UUID | None,
+    status_filter: Literal["completed", "pending"] | None,
+    min_score: float | None,
+    max_score: float | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> list:
     conditions = []
     if search:
         like = f"%{search}%"
@@ -1553,6 +1542,47 @@ async def list_attempts(
         conditions.append(ExamAttempt.submitted_at >= date_from)
     if date_to is not None:
         conditions.append(ExamAttempt.submitted_at <= date_to)
+    return conditions
+
+
+def _attempt_sort_expr(sort: AttemptSort, order: Literal["asc", "desc"]):
+    sort_columns = {
+        "student_name": Student.name,
+        "exam_title": Exam.title,
+        "score": ExamAttempt.total_score,
+        "percentage": ExamAttempt.total_score / func.nullif(ExamAttempt.max_score, 0),
+        "started_at": ExamAttempt.started_at,
+        "submitted_at": ExamAttempt.submitted_at,
+    }
+    order_expr = sort_columns[sort]
+    return order_expr.desc() if order == "desc" else order_expr.asc()
+
+
+@router.get("/attempts", response_model=AttemptListPage)
+async def list_attempts(
+    admin: AdminDep,
+    db: DbDep,
+    search: str | None = None,
+    cohort: str | None = None,
+    exam_id: uuid.UUID | None = None,
+    status_filter: Annotated[
+        Literal["completed", "pending"] | None, Query(alias="status")
+    ] = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: AttemptSort = "submitted_at",
+    order: Literal["asc", "desc"] = "desc",
+    page: int = 1,
+    page_size: int = 25,
+) -> AttemptListPage:
+    """Cross-exam attempt list backing the Student Details dashboard. 'Completed' means
+    any terminal status (submitted/auto_submitted/expired); 'Pending' means still in
+    progress."""
+    conditions = _attempt_conditions(
+        search, cohort, exam_id, status_filter, min_score, max_score, date_from, date_to
+    )
 
     filtered = (
         select(ExamAttempt, Student, Exam)
@@ -1564,16 +1594,7 @@ async def list_attempts(
 
     total = await db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
 
-    sort_columns = {
-        "student_name": Student.name,
-        "exam_title": Exam.title,
-        "score": ExamAttempt.total_score,
-        "percentage": ExamAttempt.total_score / func.nullif(ExamAttempt.max_score, 0),
-        "started_at": ExamAttempt.started_at,
-        "submitted_at": ExamAttempt.submitted_at,
-    }
-    order_expr = sort_columns[sort]
-    order_expr = order_expr.desc() if order == "desc" else order_expr.asc()
+    order_expr = _attempt_sort_expr(sort, order)
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
@@ -1603,6 +1624,37 @@ async def list_attempts(
     ]
 
     return AttemptListPage(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/attempts/export.xlsx")
+async def export_attempts(
+    admin: AdminDep,
+    db: DbDep,
+    search: str | None = None,
+    cohort: str | None = None,
+    exam_id: uuid.UUID | None = None,
+    status_filter: Annotated[
+        Literal["completed", "pending"] | None, Query(alias="status")
+    ] = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: AttemptSort = "submitted_at",
+    order: Literal["asc", "desc"] = "desc",
+) -> Response:
+    """Exports every attempt matching the same filters as `/attempts`, ignoring
+    pagination — the filtered result set, not just the visible page."""
+    conditions = _attempt_conditions(
+        search, cohort, exam_id, status_filter, min_score, max_score, date_from, date_to
+    )
+    order_expr = _attempt_sort_expr(sort, order)
+    filename, content = await export.build_attempts_workbook(db, conditions, order_expr)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/attempts/{attempt_id}/overview", response_model=AttemptOverview)
@@ -1776,7 +1828,7 @@ async def attempt_questions(
 @router.get("/attempts/{attempt_id}/activity", response_model=ActivityTimeline)
 async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> ActivityTimeline:
     """Chronological trail of what a student did during an attempt, for invigilation
-    review. focus_loss is an aggregate count only — there are no per-event timestamps —
+    review. tab_switch is an aggregate count only — there are no per-event timestamps —
     so it's surfaced as a single synthetic entry, not a real-time series."""
     attempt = await _get_attempt(db, attempt_id)
 
@@ -1814,9 +1866,9 @@ async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
     if attempt.focus_loss_count > 0:
         events.append(
             ActivityEvent(
-                type="focus_loss",
+                type="tab_switch",
                 timestamp=attempt.started_at,
-                label=f"{attempt.focus_loss_count} tab-switch/focus-loss event(s) recorded",
+                label=f"{attempt.focus_loss_count} tab switch event(s) recorded",
                 detail="Aggregate count only — no per-event timestamps are tracked",
             )
         )

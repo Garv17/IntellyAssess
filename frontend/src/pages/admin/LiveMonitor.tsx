@@ -89,7 +89,7 @@ export default function LiveMonitor() {
                 <th>Status</th>
                 <th>Time left</th>
                 <th>Answered</th>
-                <th>Focus losses</th>
+                <th>Tab switches</th>
                 <th>Submitted</th>
                 <th />
               </tr>
@@ -143,7 +143,7 @@ export default function LiveMonitor() {
 
         <p className="muted small">
           Answered counts can lag by a few seconds — auto-saved answers are flushed from the
-          buffer in batches. Focus losses are advisory signals for review, not evidence.
+          buffer in batches. Tab switches are advisory signals for review, not evidence.
         </p>
       </main>
     </div>

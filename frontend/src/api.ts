@@ -213,6 +213,8 @@ export const api = {
       formData: fd,
     });
   },
+  createStudent: (payload: { student_id: string; name: string; email: string; cohort?: string | null }) =>
+    request<Student>('/api/admin/students', { method: 'POST', body: payload }),
   bulkStudents: (file: File) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -251,6 +253,14 @@ export const api = {
     const qs = params.toString();
     return request<AttemptListPage>(`/api/admin/attempts${qs ? `?${qs}` : ''}`);
   },
+  attemptsExportUrl: (filters: Omit<AttemptFilters, 'page' | 'page_size'> = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return `/api/admin/attempts/export.xlsx${qs ? `?${qs}` : ''}`;
+  },
   attemptOverview: (attemptId: string) =>
     request<AttemptOverview>(`/api/admin/attempts/${attemptId}/overview`),
   attemptQuestions: (attemptId: string) =>
@@ -282,6 +292,24 @@ export const api = {
 /** Downloads a protected file by fetching it with the auth header, then saving the blob. */
 export async function downloadResults(examId: string, filename = 'results.xlsx') {
   const res = await fetch(api.resultsUrl(examId), {
+    headers: { Authorization: `Bearer ${tokens.access}` },
+  });
+  if (!res.ok) throw new ApiError(res.status, 'Export failed');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Downloads the currently filtered Student Details result set as an Excel file. */
+export async function downloadAttemptsExport(
+  filters: Omit<AttemptFilters, 'page' | 'page_size'> = {},
+  filename = 'attempts_export.xlsx',
+) {
+  const res = await fetch(api.attemptsExportUrl(filters), {
     headers: { Authorization: `Bearer ${tokens.access}` },
   });
   if (!res.ok) throw new ApiError(res.status, 'Export failed');
@@ -713,7 +741,7 @@ export interface QuestionBankPage {
 // ------------------------------------------------------------ activity/stats
 
 export interface ActivityEvent {
-  type: 'started' | 'answered' | 'code_run' | 'focus_loss' | 'submitted' | string;
+  type: 'started' | 'answered' | 'code_run' | 'tab_switch' | 'submitted' | string;
   timestamp: string;
   label: string;
   detail: string | null;

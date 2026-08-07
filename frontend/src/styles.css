@@ -727,6 +727,8 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 .nav-row { display: flex; justify-content: space-between; margin-top: 1.5rem; align-items: center; }
 .nav-hint { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
+.nav-next-group { display: flex; align-items: center; gap: 0.75rem; }
+.nav-next-group .review-toggle { margin-left: 0; }
 
 /* --------------------------------------------------------------- palette */
 

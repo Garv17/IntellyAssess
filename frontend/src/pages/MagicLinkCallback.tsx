@@ -1,6 +1,6 @@
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, tokens } from '../api';
 
 export default function MagicLinkCallback() {
@@ -39,7 +39,7 @@ export default function MagicLinkCallback() {
               <span>{error}</span>
             </div>
             <p className="muted small">
-              <Link to="/">Request a new sign-in link</Link>
+              Please contact your administrator for a new sign-in link.
             </p>
           </>
         ) : (

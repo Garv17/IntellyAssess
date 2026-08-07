@@ -20,6 +20,7 @@ import {
   type Question,
 } from '../api';
 import CodeEditor from '../components/CodeEditor';
+import { useToast } from '../components/Toast';
 import { useAutoSave } from '../hooks/useAutoSave';
 import { useExamTimer } from '../hooks/useExamTimer';
 
@@ -48,8 +49,13 @@ export default function Exam() {
   const finishRef = useRef<(auto: boolean) => void>(() => {});
   const expire = useCallback(() => finishRef.current(true), []);
 
+  const toast = useToast();
+  const onTabSwitch = useCallback(() => {
+    toast.error('Tab switch detected. This has been recorded for review.');
+  }, [toast]);
+
   const autoSave = useAutoSave({ debounceMs: 1200, onExpired: expire });
-  const { formatted, seconds } = useExamTimer(initialSeconds, expire);
+  const { formatted, seconds } = useExamTimer(initialSeconds, expire, onTabSwitch);
 
   const finish = useCallback(
     async (auto: boolean) => {
@@ -203,16 +209,6 @@ export default function Exam() {
             {current.question.negative_marks > 0 && (
               <span className="pill danger">−{current.question.negative_marks} if wrong</span>
             )}
-            <label className="review-toggle">
-              <input
-                type="checkbox"
-                checked={answers[current.question.id]?.is_marked_for_review ?? false}
-                onChange={(e) =>
-                  update(current.question.id, { is_marked_for_review: e.target.checked }, true)
-                }
-              />
-              <Flag size={14} /> Mark for review
-            </label>
           </div>
 
           <div key={current.question.id} className="question-fade">
@@ -240,13 +236,25 @@ export default function Exam() {
               <kbd className="kbd">←</kbd>
               <kbd className="kbd">→</kbd> to navigate
             </span>
-            <button
-              className="btn"
-              disabled={cursor === flat.length - 1}
-              onClick={() => setCursor((c) => Math.min(flat.length - 1, c + 1))}
-            >
-              Next <ChevronRight size={15} />
-            </button>
+            <div className="nav-next-group">
+              <button
+                className="btn"
+                disabled={cursor === flat.length - 1}
+                onClick={() => setCursor((c) => Math.min(flat.length - 1, c + 1))}
+              >
+                Next <ChevronRight size={15} />
+              </button>
+              <label className="review-toggle">
+                <input
+                  type="checkbox"
+                  checked={answers[current.question.id]?.is_marked_for_review ?? false}
+                  onChange={(e) =>
+                    update(current.question.id, { is_marked_for_review: e.target.checked }, true)
+                  }
+                />
+                <Flag size={14} /> Mark for review
+              </label>
+            </div>
           </div>
         </main>
 

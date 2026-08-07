@@ -65,20 +65,6 @@ LANGUAGES: dict[str, LanguageSpec] = {
         compile_cmd=["javac", "Main.java"],
         run_cmd=["java", "Main"],
     ),
-    "csharp": LanguageSpec(
-        # Mono, not the dotnet SDK: a single .cs file compiles and runs directly,
-        # no .csproj scaffolding needed.
-        image="mono:6.12",
-        filename="main.cs",
-        compile_cmd=["mcs", "-out:main.exe", "main.cs"],
-        run_cmd=["mono", "main.exe"],
-    ),
-    "php": LanguageSpec(
-        image="php:8.3-cli-alpine",
-        filename="main.php",
-        compile_cmd=None,
-        run_cmd=["php", "main.php"],
-    ),
     "sql": LanguageSpec(
         # A dedicated sqlite3-CLI image — no server process, fits the same
         # ephemeral-container-per-run model as everything else here.
@@ -200,8 +186,13 @@ def execute(
                 spec.compile_cmd, workdir="/sandbox", demux=True
             )
             if exit_code != 0:
-                _, stderr = output
-                return [], _truncate((stderr or b"").decode(errors="replace")) or "Compilation failed"
+                stdout, stderr = output
+                # Diagnostics normally land on stderr, but fall back to stdout rather
+                # than lose the message if a toolchain logs errors there instead.
+                message = (stderr or b"").decode(errors="replace") or (stdout or b"").decode(
+                    errors="replace"
+                )
+                return [], _truncate(message) or "Compilation failed"
 
         wall_limit = max(1.0, time_limit_ms / 1000)
         results: list[RunResult] = []

@@ -171,7 +171,7 @@ export default function AttemptDetail() {
                       </dd>
                     </div>
                     <div>
-                      <dt>Focus losses</dt>
+                      <dt>Tab switches</dt>
                       <dd className={overview.focus_loss_count > 5 ? 'urgent' : ''}>
                         {overview.focus_loss_count}
                       </dd>
@@ -261,7 +261,7 @@ export default function AttemptDetail() {
                           className={`timeline-dot ${
                             event.type === 'submitted'
                               ? 'ok'
-                              : event.type === 'focus_loss'
+                              : event.type === 'tab_switch'
                                 ? 'warn'
                                 : event.type === 'started'
                                   ? 'ok'

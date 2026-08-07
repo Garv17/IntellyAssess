@@ -111,7 +111,7 @@ async def seed(student_count: int) -> None:
                 starts_at=datetime.now(UTC) - timedelta(minutes=5),
                 ends_at=datetime.now(UTC) + timedelta(days=7),
                 randomize_questions=True,
-                randomize_options=False,
+                randomize_options=True,
                 cohort="2026",
                 created_by=admin.id,
             )
@@ -223,7 +223,7 @@ async def seed(student_count: int) -> None:
                     "Read two space-separated integers from stdin and print their sum.\n\n"
                     "**Input**\n```\n3 4\n```\n\n**Output**\n```\n7\n```"
                 ),
-                allowed_languages=["python", "javascript", "c", "cpp", "java", "csharp", "php"],
+                allowed_languages=["python", "javascript", "c", "cpp", "java"],
                 time_limit_ms=2000,
                 memory_limit_mb=128,
                 starter_code={
@@ -244,15 +244,6 @@ async def seed(student_count: int) -> None:
                         "import java.util.*;\npublic class Main{public static void main(String[] a){"
                         "Scanner s=new Scanner(System.in);"
                         "System.out.println(s.nextLong()+s.nextLong());}}\n"
-                    ),
-                    "csharp": (
-                        "using System;\nclass Program{static void Main(){"
-                        "var p=Console.ReadLine().Split(' ');"
-                        "long a=long.Parse(p[0]),b=long.Parse(p[1]);Console.WriteLine(a+b);}}\n"
-                    ),
-                    "php": (
-                        "<?php\n[$a,$b]=array_map('intval', explode(' ', trim(fgets(STDIN))));"
-                        '\necho $a+$b, "\\n";\n'
                     ),
                 },
             )

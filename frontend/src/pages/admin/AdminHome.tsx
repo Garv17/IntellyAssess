@@ -51,6 +51,8 @@ export default function AdminHome() {
   });
   const [bulk, setBulk] = useState<BulkResult | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [studentForm, setStudentForm] = useState({ student_id: '', name: '', email: '', cohort: '' });
+  const [addingStudent, setAddingStudent] = useState(false);
 
   const [students, setStudents] = useState<Student[]>([]);
   const [studentsLoading, setStudentsLoading] = useState(true);
@@ -269,10 +271,31 @@ export default function AdminHome() {
       const result = await api.bulkStudents(file);
       setBulk(result);
       toast.success(`Created ${result.created} student${result.created === 1 ? '' : 's'}`);
+      await Promise.all([loadStudents(studentCohortFilter), load()]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Upload failed');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const addStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddingStudent(true);
+    try {
+      await api.createStudent({
+        student_id: studentForm.student_id,
+        name: studentForm.name,
+        email: studentForm.email,
+        cohort: studentForm.cohort || null,
+      });
+      setStudentForm({ student_id: '', name: '', email: '', cohort: '' });
+      toast.success('Student added');
+      await Promise.all([loadStudents(studentCohortFilter), load()]);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not add student');
+    } finally {
+      setAddingStudent(false);
     }
   };
 
@@ -369,6 +392,60 @@ export default function AdminHome() {
             <div className="form-actions">
               <button className="btn primary" disabled={creating}>
                 {creating ? 'Creating…' : 'Create & open builder'}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="card compact">
+          <div className="card-header">
+            <h2>
+              <Plus size={16} style={{ verticalAlign: -2, marginRight: 4 }} />
+              Add student
+            </h2>
+          </div>
+          <form className="stack" onSubmit={addStudent}>
+            <div className="row-form">
+              <label>
+                Enrollment ID
+                <input
+                  value={studentForm.student_id}
+                  onChange={(e) => setStudentForm({ ...studentForm, student_id: e.target.value })}
+                  placeholder="e.g. 2026-001"
+                  required
+                />
+              </label>
+              <label className="grow">
+                Name
+                <input
+                  value={studentForm.name}
+                  onChange={(e) => setStudentForm({ ...studentForm, name: e.target.value })}
+                  required
+                />
+              </label>
+            </div>
+            <div className="row-form">
+              <label className="grow">
+                Email
+                <input
+                  type="email"
+                  value={studentForm.email}
+                  onChange={(e) => setStudentForm({ ...studentForm, email: e.target.value })}
+                  required
+                />
+              </label>
+              <label>
+                Cohort
+                <input
+                  value={studentForm.cohort}
+                  onChange={(e) => setStudentForm({ ...studentForm, cohort: e.target.value })}
+                  placeholder="optional"
+                />
+              </label>
+            </div>
+            <div className="form-actions">
+              <button className="btn primary" disabled={addingStudent}>
+                {addingStudent ? 'Adding…' : 'Add student'}
               </button>
             </div>
           </form>
