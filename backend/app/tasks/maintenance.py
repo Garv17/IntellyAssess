@@ -142,6 +142,7 @@ def auto_submit_expired() -> dict[str, int]:
     minute 59 still gets a graded submission."""
     now = datetime.now(UTC)
     submitted = 0
+    needs_coding_grade: list[str] = []
 
     with session_scope() as session:
         expired = session.execute(
@@ -182,9 +183,15 @@ def auto_submit_expired() -> dict[str, int]:
             submitted += 1
 
             if pending:
-                from app.tasks.judge_tasks import grade_attempt_coding
+                needs_coding_grade.append(str(attempt.id))
 
-                grade_attempt_coding.delay(str(attempt.id))
+    # Dispatched only after the `with` block commits: the judge worker reads
+    # attempts over its own connection, and would otherwise race the commit above.
+    if needs_coding_grade:
+        from app.tasks.judge_tasks import grade_attempt_coding
+
+        for attempt_id in needs_coding_grade:
+            grade_attempt_coding.delay(attempt_id)
 
     if submitted:
         log.info("auto-submitted %s expired attempts", submitted)

@@ -6,6 +6,7 @@ import { ToastProvider } from './components/Toast';
 import Dashboard from './pages/Dashboard';
 import Exam from './pages/Exam';
 import Login from './pages/Login';
+import MagicLinkCallback from './pages/MagicLinkCallback';
 import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
@@ -29,6 +30,7 @@ createRoot(document.getElementById('root')!).render(
       <Routes>
         <Route path="/" element={<Login />} />
         <Route path="/admin/login" element={<Login admin />} />
+        <Route path="/auth/magic" element={<MagicLinkCallback />} />
 
         <Route
           path="/dashboard"

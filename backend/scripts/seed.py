@@ -30,7 +30,6 @@ from app.models import (
 from app.security import hash_password
 
 DEMO_ADMIN = ("admin@example.com", "Admin User", "Admin@123")
-DEMO_STUDENT_PASSWORD = "Student@123"
 
 MCQS = [
     (
@@ -224,7 +223,7 @@ async def seed(student_count: int) -> None:
                     "Read two space-separated integers from stdin and print their sum.\n\n"
                     "**Input**\n```\n3 4\n```\n\n**Output**\n```\n7\n```"
                 ),
-                allowed_languages=["python", "cpp", "java", "javascript"],
+                allowed_languages=["python", "javascript", "c", "cpp", "java", "csharp", "php"],
                 time_limit_ms=2000,
                 memory_limit_mb=128,
                 starter_code={
@@ -232,6 +231,10 @@ async def seed(student_count: int) -> None:
                     "javascript": (
                         "const [a, b] = require('fs').readFileSync(0, 'utf8')"
                         ".trim().split(/\\s+/).map(Number);\nconsole.log(a + b);\n"
+                    ),
+                    "c": (
+                        '#include <stdio.h>\nint main(){long long a,b;scanf("%lld %lld",&a,&b);'
+                        'printf("%lld\\n",a+b);return 0;}\n'
                     ),
                     "cpp": (
                         "#include <iostream>\nint main(){long long a,b;"
@@ -241,6 +244,15 @@ async def seed(student_count: int) -> None:
                         "import java.util.*;\npublic class Main{public static void main(String[] a){"
                         "Scanner s=new Scanner(System.in);"
                         "System.out.println(s.nextLong()+s.nextLong());}}\n"
+                    ),
+                    "csharp": (
+                        "using System;\nclass Program{static void Main(){"
+                        "var p=Console.ReadLine().Split(' ');"
+                        "long a=long.Parse(p[0]),b=long.Parse(p[1]);Console.WriteLine(a+b);}}\n"
+                    ),
+                    "php": (
+                        "<?php\n[$a,$b]=array_map('intval', explode(' ', trim(fgets(STDIN))));"
+                        '\necho $a+$b, "\\n";\n'
                     ),
                 },
             )
@@ -266,13 +278,71 @@ async def seed(student_count: int) -> None:
                     )
                 )
 
+            # SQL runs against a fresh in-memory DB per test case, so unlike the other
+            # languages here, a test case's stdin is schema/setup SQL rather than
+            # program input — see combine_stdin_with_code in services/sandbox.py.
+            sql_question = Question(
+                section_id=code_section.id,
+                type=QuestionType.coding,
+                body_md="Find high scorers",
+                order_index=1,
+            )
+            db.add(sql_question)
+            await db.flush()
+
+            sql_problem = CodingProblem(
+                question_id=sql_question.id,
+                statement_md=(
+                    "### Find High Scorers\n\n"
+                    "You're given a `students(id, name, marks)` table. Write a single "
+                    "`SELECT` query returning the `name` of every student with "
+                    "`marks >= 70`, one per line, ordered alphabetically.\n\n"
+                    "The table already exists when your query runs — don't create it "
+                    "yourself."
+                ),
+                allowed_languages=["sql"],
+                time_limit_ms=2000,
+                memory_limit_mb=128,
+                starter_code={"sql": "SELECT name FROM students WHERE marks >= 70 ORDER BY name;\n"},
+            )
+            db.add(sql_problem)
+            await db.flush()
+
+            sql_cases = [
+                (
+                    "CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);\n"
+                    "INSERT INTO students VALUES (1,'Alice',80),(2,'Bob',65),(3,'Carol',90);",
+                    "Alice\nCarol",
+                    True,
+                    1,
+                ),
+                (
+                    "CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);\n"
+                    "INSERT INTO students VALUES (1,'Dan',72),(2,'Eve',50),(3,'Frank',99),"
+                    "(4,'Grace',70);",
+                    "Dan\nFrank\nGrace",
+                    False,
+                    1,
+                ),
+            ]
+            for idx, (stdin, expected, is_sample, weight) in enumerate(sql_cases):
+                db.add(
+                    TestCase(
+                        coding_problem_id=sql_problem.id,
+                        stdin=stdin,
+                        expected_stdout=expected,
+                        is_sample=is_sample,
+                        weight=weight,
+                        order_index=idx,
+                    )
+                )
+
             print(f"demo exam created: {exam.id}")
 
         # --- Students
         existing_ids = set(
             (await db.execute(select(Student.student_id))).scalars()
         )
-        password_hash = hash_password(DEMO_STUDENT_PASSWORD)  # hash once: bcrypt is slow by design
         created = 0
         for i in range(1, student_count + 1):
             sid = f"STU{i:04d}"
@@ -284,14 +354,13 @@ async def seed(student_count: int) -> None:
                     name=f"Student {i:04d}",
                     email=f"{sid.lower()}@example.com",
                     cohort="2026",
-                    password_hash=password_hash,
                 )
             )
             created += 1
 
         await db.commit()
-        print(f"students created: {created} (password for all: {DEMO_STUDENT_PASSWORD})")
-        print("login as STU0001 / Student@123")
+        print(f"students created: {created}")
+        print("students sign in via magic link sent to their email, e.g. stu0001@example.com")
 
 
 if __name__ == "__main__":

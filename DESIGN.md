@@ -70,7 +70,7 @@ With those two moves, the Postgres-facing load during an exam is roughly 5–8 r
 ```
 Admin(id, email, password_hash, role, created_at)
 
-Student(id, student_id UNIQUE, name, email, password_hash, cohort, created_at)
+Student(id, student_id UNIQUE, name, email UNIQUE, cohort, created_at)
 
 Exam(id, title, description, duration_minutes, status[draft|published|closed],
      starts_at, ends_at, randomize_questions, randomize_options,
@@ -177,7 +177,8 @@ MCQ and DI grade synchronously at submit (a dictionary lookup against `is_correc
 
 **Auth**
 ```
-POST   /api/auth/student/login      {student_id, password}   → {access, refresh}
+POST   /api/auth/student/magic-link/request  {email}          → generic ack (emails a link)
+POST   /api/auth/student/magic-link/verify   {token}          → {access, refresh}
 POST   /api/auth/admin/login        {email, password}
 POST   /api/auth/refresh
 POST   /api/auth/logout             (jti → Redis denylist)
@@ -231,12 +232,12 @@ GET    /api/admin/exams/{id}/analytics        score distribution, per-question s
 |---|---|
 | Auth | JWT: 15-min access token, 7-day refresh. Access claims carry `sub`, `role`, `attempt_id`, `jti`. |
 | Token revocation | `jti` denylist in Redis with TTL = token lifetime. |
-| Passwords | bcrypt (cost 12). Bulk student upload generates random passwords, returned once as CSV. |
+| Passwords | Admins only, bcrypt (cost 12). Students authenticate via a one-time magic link (JWT, `type=magic`, 15-min TTL, denylisted on redemption) emailed through Brevo. |
 | Multiple attempts | DB unique constraint (§3), plus attempt-bound tokens. |
 | Answer tampering | Correctness never leaves the server. `is_correct` and hidden test cases are excluded from all student-facing serializers. |
 | Concurrent sessions | One active session per student ID; a second login invalidates the first and is written to `AuditLog`. |
 | Sandbox escape | No network, read-only rootfs, dropped capabilities, non-root, pids/memory/CPU caps, wall-clock kill. |
-| Rate limiting | Nginx: 10 rps/IP general, 5 login attempts/min/student ID. |
+| Rate limiting | Nginx: 10 rps/IP general. Magic-link requests are additionally capped to 1/min/student via Redis, to protect the Brevo daily send quota. |
 | Transport | TLS only; HSTS; `Secure`/`SameSite=Strict` refresh cookie. |
 
 **On proctoring:** tab-switch and focus-loss events are logged as advisory signals for the admin dashboard, not enforced blocks. Browser-side lockdown is trivially bypassable, and hard-failing an exam on a spurious blur event is worse than the cheating it prevents. Treat these as flags for human review.

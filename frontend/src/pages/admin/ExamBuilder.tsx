@@ -32,6 +32,33 @@ import { useToast } from '../../components/Toast';
 
 type Tab = 'mcq' | 'di' | 'coding' | 'bulk' | 'bank';
 
+// Must match the keys in backend/app/services/sandbox.py's LANGUAGES dict — that's
+// what actually knows how to compile/run each one.
+const CODING_LANGUAGES = ['python', 'javascript', 'c', 'cpp', 'java', 'csharp', 'php', 'sql'];
+
+// Test cases run through a real program (or, for SQL, a real database) — not a
+// structured LeetCode-style function call. This is the single most common way a
+// coding question ends up broken: someone pastes a problem statement's example
+// table directly into stdin/expected output instead of writing what the program
+// actually reads and prints.
+function codingCaseHint(languages: string[]): string {
+  if (languages.length > 0 && languages.every((l) => l === 'sql')) {
+    return (
+      "For SQL questions, stdin is the schema setup that runs before the student's " +
+      'query (CREATE TABLE + INSERT statements) — not a copy of the problem\'s ' +
+      'example table. Expected stdout is the query result: one row per line, columns ' +
+      "separated by |, no header row. E.g. stdin: \"CREATE TABLE t(x INT); INSERT INTO " +
+      't VALUES (1),(2);", expected stdout for `SELECT x FROM t;`: "1\\n2".'
+    );
+  }
+  return (
+    'stdin is exactly what a correct submission reads from standard input; expected ' +
+    "stdout is exactly what it prints (trailing whitespace per line is ignored). Write " +
+    "the literal input/output text — don't paste an example table from the problem " +
+    'statement.'
+  );
+}
+
 export default function ExamBuilder() {
   const { examId = '' } = useParams();
   const toast = useToast();
@@ -865,7 +892,7 @@ function CodingEditForm({ question, onDone, onCancel, onError }: CodingEditProps
         />
       </label>
       <div className="lang-row">
-        {['python', 'cpp', 'java', 'javascript'].map((lang) => (
+        {CODING_LANGUAGES.map((lang) => (
           <label key={lang} className="inline">
             <input
               type="checkbox"
@@ -889,6 +916,8 @@ function CodingEditForm({ question, onDone, onCancel, onError }: CodingEditProps
         <DifficultyPicker value={difficulty} onChange={setDifficulty} />
       </div>
 
+      <p className="muted small">{codingCaseHint(languages)}</p>
+
       {cases.map((c, i) => (
         <fieldset key={i} className="sub-card">
           <legend>
@@ -900,6 +929,11 @@ function CodingEditForm({ question, onDone, onCancel, onError }: CodingEditProps
               <textarea
                 value={c.stdin}
                 rows={2}
+                placeholder={
+                  languages.every((l) => l === 'sql')
+                    ? "CREATE TABLE t(x INT);\nINSERT INTO t VALUES (1),(2);"
+                    : '3 4'
+                }
                 onChange={(e) => {
                   const next = [...cases];
                   next[i] = { ...c, stdin: e.target.value };
@@ -912,6 +946,7 @@ function CodingEditForm({ question, onDone, onCancel, onError }: CodingEditProps
               <textarea
                 value={c.expected_stdout}
                 rows={2}
+                placeholder={languages.every((l) => l === 'sql') ? '1\n2' : '7'}
                 onChange={(e) => {
                   const next = [...cases];
                   next[i] = { ...c, expected_stdout: e.target.value };
@@ -1427,7 +1462,7 @@ function CodingForm({ sectionId, onDone, onError }: FormProps) {
         />
       </label>
       <div className="lang-row">
-        {['python', 'cpp', 'java', 'javascript'].map((lang) => (
+        {CODING_LANGUAGES.map((lang) => (
           <label key={lang} className="inline">
             <input
               type="checkbox"
@@ -1457,6 +1492,7 @@ function CodingForm({ sectionId, onDone, onError }: FormProps) {
         At least one sample and one hidden case are required. Students can only run against
         samples; hidden cases decide the score.
       </p>
+      <p className="muted small">{codingCaseHint(languages)}</p>
 
       {cases.map((c, i) => (
         <fieldset key={i} className="sub-card">
@@ -1469,6 +1505,11 @@ function CodingForm({ sectionId, onDone, onError }: FormProps) {
               <textarea
                 value={c.stdin}
                 rows={2}
+                placeholder={
+                  languages.every((l) => l === 'sql')
+                    ? "CREATE TABLE t(x INT);\nINSERT INTO t VALUES (1),(2);"
+                    : '3 4'
+                }
                 onChange={(e) => {
                   const next = [...cases];
                   next[i] = { ...c, stdin: e.target.value };
@@ -1481,6 +1522,7 @@ function CodingForm({ sectionId, onDone, onError }: FormProps) {
               <textarea
                 value={c.expected_stdout}
                 rows={2}
+                placeholder={languages.every((l) => l === 'sql') ? '1\n2' : '7'}
                 onChange={(e) => {
                   const next = [...cases];
                   next[i] = { ...c, expected_stdout: e.target.value };

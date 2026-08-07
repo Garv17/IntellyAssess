@@ -19,7 +19,6 @@ from collections import defaultdict
 import httpx
 
 BASE_URL = "http://localhost:8000"
-PASSWORD = "Student@123"
 
 latencies: dict[str, list[float]] = defaultdict(list)
 errors: dict[str, int] = defaultdict(int)
@@ -43,11 +42,22 @@ async def simulate_student(client: httpx.AsyncClient, student_id: str, duration:
     # case and would measure the wrong thing.
     await asyncio.sleep(random.uniform(0, 60))
 
-    response = await timed(
-        "login",
+    # Requires ENVIRONMENT=development on the server: that's what makes the request
+    # endpoint hand back dev_token instead of only emailing it via Brevo.
+    requested = await timed(
+        "magic_request",
         client.post(
-            "/api/auth/student/login", json={"student_id": student_id, "password": PASSWORD}
+            "/api/auth/student/magic-link/request",
+            json={"email": f"{student_id.lower()}@example.com"},
         ),
+    )
+    dev_token = requested.json().get("dev_token") if requested else None
+    if not dev_token:
+        return
+
+    response = await timed(
+        "magic_verify",
+        client.post("/api/auth/student/magic-link/verify", json={"token": dev_token}),
     )
     if response is None or response.status_code != 200:
         return

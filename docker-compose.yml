@@ -47,6 +47,9 @@ services:
 
   api:
     build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment: *backend-env
     volumes:
       - uploads:/app/uploads
@@ -61,6 +64,9 @@ services:
   worker:
     build: ./backend
     command: celery -A app.tasks.celery_app.celery_app worker -Q default -c 4 --loglevel=info
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment: *backend-env
     volumes:
       - uploads:/app/uploads
@@ -75,6 +81,9 @@ services:
   judge:
     build: ./backend
     command: celery -A app.tasks.celery_app.celery_app worker -Q judge -c 8 --loglevel=info
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment: *backend-env
     user: root
     volumes:
@@ -86,6 +95,9 @@ services:
   beat:
     build: ./backend
     command: celery -A app.tasks.celery_app.celery_app beat --loglevel=info
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment: *backend-env
     depends_on:
       redis:

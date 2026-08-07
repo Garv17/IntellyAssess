@@ -329,6 +329,12 @@ async def run_code(
         },
     )
 
+    # Commit before enqueueing: the judge worker reads this row over its own
+    # connection, and get_db()'s commit doesn't happen until after this function
+    # returns. Without this, the worker can (and, under low latency, reliably does)
+    # run its query before the row is visible outside this transaction.
+    await db.commit()
+
     from app.tasks.judge_tasks import judge_run  # local import avoids a circular import
 
     judge_run.delay(str(run.id))
@@ -390,6 +396,10 @@ async def submit_exam(
     await cache.clear_attempt(str(attempt.id))
 
     if coding_pending:
+        # Same reasoning as run_code: commit first so the judge worker's own
+        # connection can actually see the answers it's about to grade.
+        await db.commit()
+
         from app.tasks.judge_tasks import grade_attempt_coding
 
         grade_attempt_coding.delay(str(attempt.id))

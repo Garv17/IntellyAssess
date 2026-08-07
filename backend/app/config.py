@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     access_token_minutes: int = 15
     refresh_token_days: int = 7
 
+    # Magic-link email (Brevo transactional API)
+    brevo_api_key: str = ""
+    brevo_sender_email: str = "no-reply@example.com"
+    brevo_sender_name: str = "IntelliAssess"
+    frontend_base_url: str = "http://localhost:5173"
+    magic_link_ttl_minutes: int = 15
+    # Minimum gap between two link requests for the same student — protects the
+    # Brevo daily send quota from a student mashing "resend".
+    magic_link_cooldown_seconds: int = 60
+
     # Exam behaviour
     autosave_flush_seconds: int = 5
     autosubmit_sweep_seconds: int = 30
@@ -36,7 +46,7 @@ class Settings(BaseSettings):
     # Judge sandbox
     judge_image_prefix: str = "exam-judge"
     judge_timeout_seconds: int = 5
-    judge_memory_mb: int = 128
+    judge_memory_mb: int = 256
     judge_cpus: float = 1.0
     judge_pids_limit: int = 64
     judge_max_code_bytes: int = 64 * 1024
@@ -68,6 +78,10 @@ def get_settings() -> Settings:
                 f"JWT_SECRET must be at least {MIN_SECRET_BYTES} bytes for HS256 "
                 f"(got {len(config.jwt_secret.encode())})"
             )
+        if not config.brevo_api_key:
+            # Students can only sign in via magic link, so a missing mailer key means
+            # nobody can log in at all — fail at boot, not on the first login attempt.
+            raise RuntimeError("BREVO_API_KEY is not set; student magic-link login cannot send mail")
     return config
 
 

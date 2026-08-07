@@ -144,6 +144,13 @@ def grade_attempt_coding(self, attempt_id: str) -> dict:
             .where(Answer.attempt_id == attempt.id, Answer.code_text.isnot(None))
         ).all()
 
+        if not rows:
+            # This task is only ever dispatched when a pending coding answer was just
+            # written on another connection. Finding none here almost always means that
+            # write hasn't committed yet — retry instead of marking the attempt "done"
+            # with whatever score it happens to have (i.e. never actually graded).
+            raise self.retry(exc=RuntimeError(f"no gradable coding answers yet for {attempt_id}"))
+
         graded = 0
         for answer, problem, question in rows:
             cases = _test_cases(session, problem.id, samples_only=False)

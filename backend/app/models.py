@@ -91,9 +91,9 @@ class Student(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     student_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Required and unique: it's the magic-link login identity, not just contact info.
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     cohort: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     attempts: Mapped[list[ExamAttempt]] = relationship(back_populates="student")
@@ -247,7 +247,7 @@ class CodingProblem(Base, TimestampMixin):
         ARRAY(String(32)), default=lambda: ["python", "java", "cpp"], nullable=False
     )
     time_limit_ms: Mapped[int] = mapped_column(Integer, default=2000, nullable=False)
-    memory_limit_mb: Mapped[int] = mapped_column(Integer, default=128, nullable=False)
+    memory_limit_mb: Mapped[int] = mapped_column(Integer, default=256, nullable=False)
     starter_code: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     question: Mapped[Question] = relationship(back_populates="coding_problem")

@@ -27,6 +27,11 @@ class LanguageSpec:
     # Compile step is optional; run_cmd executes inside /sandbox with stdin piped in.
     compile_cmd: list[str] | None
     run_cmd: list[str]
+    # SQL only: there's no separate "program" to run against varying input — a test
+    # case's stdin *is* the schema/setup script, and the student's code is the query
+    # to run against it. Both get concatenated into one script per test case instead
+    # of code being compiled once and stdin varying alone.
+    combine_stdin_with_code: bool = False
 
 
 LANGUAGES: dict[str, LanguageSpec] = {
@@ -42,6 +47,12 @@ LANGUAGES: dict[str, LanguageSpec] = {
         compile_cmd=None,
         run_cmd=["node", "main.js"],
     ),
+    "c": LanguageSpec(
+        image="gcc:13",
+        filename="main.c",
+        compile_cmd=["gcc", "-O2", "-std=c17", "-o", "main", "main.c"],
+        run_cmd=["./main"],
+    ),
     "cpp": LanguageSpec(
         image="gcc:13",
         filename="main.cpp",
@@ -53,6 +64,29 @@ LANGUAGES: dict[str, LanguageSpec] = {
         filename="Main.java",
         compile_cmd=["javac", "Main.java"],
         run_cmd=["java", "Main"],
+    ),
+    "csharp": LanguageSpec(
+        # Mono, not the dotnet SDK: a single .cs file compiles and runs directly,
+        # no .csproj scaffolding needed.
+        image="mono:6.12",
+        filename="main.cs",
+        compile_cmd=["mcs", "-out:main.exe", "main.cs"],
+        run_cmd=["mono", "main.exe"],
+    ),
+    "php": LanguageSpec(
+        image="php:8.3-cli-alpine",
+        filename="main.php",
+        compile_cmd=None,
+        run_cmd=["php", "main.php"],
+    ),
+    "sql": LanguageSpec(
+        # A dedicated sqlite3-CLI image — no server process, fits the same
+        # ephemeral-container-per-run model as everything else here.
+        image="nouchka/sqlite3:latest",
+        filename="main.sql",
+        compile_cmd=None,
+        run_cmd=["sqlite3", "-batch", ":memory:"],
+        combine_stdin_with_code=True,
     ),
 }
 
@@ -117,14 +151,20 @@ def execute(
         container = client.containers.create(
             spec.image,
             command=["sleep", str(max(30, len(stdin_batch) * (time_limit_ms // 1000 + 2)))],
+            # Some judge images set their own ENTRYPOINT (e.g. the sqlite3 image
+            # defaults to running sqlite3 itself). Clearing it guarantees `command`
+            # above is what actually runs as PID 1, regardless of the base image.
+            entrypoint=[],
             working_dir="/sandbox",
             network_disabled=True,
             network_mode="none",
             read_only=True,
             # /sandbox must be writable for compilation output, but is capped and
             # destroyed with the container. mode=1777 so the non-root user can write.
+            # exec is required here (unlike /tmp) — compiled languages (C/C++) run a
+            # binary straight out of this mount; Docker's tmpfs default is noexec.
             tmpfs={
-                "/sandbox": "rw,size=32m,mode=1777",
+                "/sandbox": "rw,exec,size=32m,mode=1777",
                 "/tmp": "rw,size=16m,mode=1777",
             },
             mem_limit=f"{max(memory_limit_mb, settings.judge_memory_mb)}m",
@@ -168,6 +208,7 @@ def execute(
 
         for stdin_text in stdin_batch:
             started = time.perf_counter()
+            effective_stdin = f"{stdin_text}\n{code}\n" if spec.combine_stdin_with_code else stdin_text
             # `timeout` inside the container enforces the per-case limit; the container's
             # own sleep command bounds the total session as a second line of defence.
             command = [
@@ -180,7 +221,7 @@ def execute(
                 command,
                 workdir="/sandbox",
                 demux=True,
-                environment={"SANDBOX_STDIN": stdin_text},
+                environment={"SANDBOX_STDIN": effective_stdin},
             )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             stdout_b, stderr_b = output if output else (b"", b"")

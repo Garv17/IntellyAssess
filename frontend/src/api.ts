@@ -128,10 +128,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 }
 
 export const api = {
-  studentLogin: (student_id: string, password: string) =>
-    request<TokenPair>('/api/auth/student/login', {
+  requestMagicLink: (email: string) =>
+    request<MagicLinkSent>('/api/auth/student/magic-link/request', {
       method: 'POST',
-      body: { student_id, password },
+      body: { email },
+    }),
+  verifyMagicLink: (token: string) =>
+    request<TokenPair>('/api/auth/student/magic-link/verify', {
+      method: 'POST',
+      body: { token },
     }),
   adminLogin: (email: string, password: string) =>
     request<TokenPair>('/api/auth/admin/login', { method: 'POST', body: { email, password } }),
@@ -214,14 +219,21 @@ export const api = {
     return request<BulkResult>('/api/admin/students/bulk', { method: 'POST', formData: fd });
   },
   students: (cohort?: string) =>
-    request<Student[]>(`/api/admin/students${cohort ? `?cohort=${encodeURIComponent(cohort)}` : ''}`),
+    request<Student[]>(
+      `/api/admin/students?limit=500${cohort ? `&cohort=${encodeURIComponent(cohort)}` : ''}`,
+    ),
   updateStudent: (studentId: string, payload: Partial<Student>) =>
     request<Student>(`/api/admin/students/${studentId}`, { method: 'PATCH', body: payload }),
   deleteStudent: (studentId: string) =>
     request<void>(`/api/admin/students/${studentId}`, { method: 'DELETE' }),
-  resetStudentPassword: (studentId: string) =>
-    request<StudentCredential>(`/api/admin/students/${studentId}/reset-password`, {
+  sendStudentMagicLink: (studentId: string) =>
+    request<MagicLinkSent>(`/api/admin/students/${studentId}/send-magic-link`, {
       method: 'POST',
+    }),
+  sendBulkMagicLinks: (studentIds: string[]) =>
+    request<BulkMagicLinkQueued>('/api/admin/students/magic-link/bulk', {
+      method: 'POST',
+      body: { student_ids: studentIds },
     }),
   publish: (examId: string) =>
     request<PublishResult>(`/api/admin/exams/${examId}/publish`, { method: 'POST' }),
@@ -494,22 +506,23 @@ export interface Exam {
   pass_percentage: number | null;
   created_at: string;
 }
-export interface StudentCredential {
-  student_id: string;
-  name: string;
-  password: string;
+export interface MagicLinkSent {
+  message: string;
+  dev_token?: string | null;
+}
+export interface BulkMagicLinkQueued {
+  queued: number;
 }
 export interface BulkResult {
   created: number;
   skipped: number;
   errors: string[];
-  credentials: StudentCredential[];
 }
 export interface Student {
   id: string;
   student_id: string;
   name: string;
-  email: string | null;
+  email: string;
   cohort: string | null;
   is_active: boolean;
 }

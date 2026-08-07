@@ -7,6 +7,7 @@ import {
   GraduationCap,
   KeyRound,
   Layers,
+  Loader2,
   Plus,
   Radio,
   Sparkles,
@@ -24,7 +25,6 @@ import {
   type Exam,
   type OverviewStats,
   type Student,
-  type StudentCredential,
 } from '../../api';
 import AppShell from '../../components/AppShell';
 import { Identity } from '../../components/Avatar';
@@ -74,7 +74,8 @@ export default function AdminHome() {
   });
   const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
   const [deletingStudentBusy, setDeletingStudentBusy] = useState(false);
-  const [resetPasswordResult, setResetPasswordResult] = useState<StudentCredential | null>(null);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
+  const [sendingBulkLinks, setSendingBulkLinks] = useState(false);
 
   const load = async () => {
     try {
@@ -96,10 +97,40 @@ export default function AdminHome() {
     setStudentsLoading(true);
     try {
       setStudents(await api.students(cohort || undefined));
+      setSelectedStudentIds(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load students');
     } finally {
       setStudentsLoading(false);
+    }
+  };
+
+  const toggleStudentSelected = (id: string) => {
+    setSelectedStudentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllStudents = () => {
+    setSelectedStudentIds((prev) =>
+      prev.size === students.length ? new Set() : new Set(students.map((s) => s.id)),
+    );
+  };
+
+  const sendBulkMagicLinks = async () => {
+    if (selectedStudentIds.size === 0) return;
+    setSendingBulkLinks(true);
+    try {
+      const result = await api.sendBulkMagicLinks([...selectedStudentIds]);
+      toast.success(`Queued sign-in links for ${result.queued} student${result.queued === 1 ? '' : 's'}`);
+      setSelectedStudentIds(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not queue the sign-in links');
+    } finally {
+      setSendingBulkLinks(false);
     }
   };
 
@@ -173,7 +204,7 @@ export default function AdminHome() {
     try {
       await api.updateStudent(editingStudent.id, {
         name: studentEditForm.name,
-        email: studentEditForm.email || null,
+        email: studentEditForm.email,
         cohort: studentEditForm.cohort || null,
         is_active: studentEditForm.is_active,
       });
@@ -201,12 +232,13 @@ export default function AdminHome() {
     }
   };
 
-  const resetPassword = async (student: Student) => {
+  const sendMagicLink = async (student: Student) => {
     setError(null);
     try {
-      setResetPasswordResult(await api.resetStudentPassword(student.id));
+      const result = await api.sendStudentMagicLink(student.id);
+      toast.success(result.message);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not reset the password');
+      toast.error(err instanceof Error ? err.message : 'Could not send the sign-in link');
     }
   };
 
@@ -242,20 +274,6 @@ export default function AdminHome() {
     } finally {
       setUploading(false);
     }
-  };
-
-  const downloadCredentials = () => {
-    if (!bulk?.credentials.length) return;
-    const csv = [
-      'enrollment_id,name,password',
-      ...bulk.credentials.map((c) => `${c.student_id},"${c.name}",${c.password}`),
-    ].join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'student-credentials.csv';
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   return (
@@ -364,8 +382,8 @@ export default function AdminHome() {
             </h2>
           </div>
           <p className="muted small">
-            CSV columns: <code>enrollment_id, name, email, cohort, dob, password</code>. Leave{' '}
-            <code>password</code> blank to auto-generate. Generated passwords are shown once.
+            CSV columns: <code>enrollment_id, name, email, cohort</code>. Email is required —
+            students sign in via a link sent to it.
           </p>
           <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex' }}>
             <UploadCloud size={15} />
@@ -385,11 +403,6 @@ export default function AdminHome() {
               <Sparkles size={16} />
               <div>
                 Created {bulk.created}, skipped {bulk.skipped}.{' '}
-                {bulk.credentials.length > 0 && (
-                  <button className="btn link" onClick={downloadCredentials}>
-                    Download credentials CSV
-                  </button>
-                )}
                 {bulk.errors.length > 0 && (
                   <ul className="errors">
                     {bulk.errors.slice(0, 10).map((msg) => (
@@ -503,7 +516,23 @@ export default function AdminHome() {
               Clear
             </button>
           )}
+          {selectedStudentIds.size > 0 && (
+            <button
+              className="btn primary"
+              disabled={sendingBulkLinks}
+              onClick={() => void sendBulkMagicLinks()}
+            >
+              {sendingBulkLinks && <Loader2 size={15} className="spinner" />}
+              {sendingBulkLinks
+                ? 'Sending…'
+                : `Send login link to ${selectedStudentIds.size} selected`}
+            </button>
+          )}
         </div>
+        <p className="muted small">
+          Tip: filter by cohort (e.g. one college's batch), select all, then send login links to
+          everyone shown at once.
+        </p>
         {studentsLoading ? (
           <SkeletonTable rows={4} />
         ) : students.length === 0 ? (
@@ -513,6 +542,14 @@ export default function AdminHome() {
             <table className="table">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={students.length > 0 && selectedStudentIds.size === students.length}
+                      onChange={toggleSelectAllStudents}
+                      aria-label="Select all students"
+                    />
+                  </th>
                   <th>Student</th>
                   <th>Enrollment ID</th>
                   <th>Email</th>
@@ -524,6 +561,14 @@ export default function AdminHome() {
               <tbody>
                 {students.map((student) => (
                   <tr key={student.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedStudentIds.has(student.id)}
+                        onChange={() => toggleStudentSelected(student.id)}
+                        aria-label={`Select ${student.name}`}
+                      />
+                    </td>
                     <td>
                       <Identity name={student.name} size="sm" />
                     </td>
@@ -540,8 +585,8 @@ export default function AdminHome() {
                         <DropdownItem icon={<Edit3 size={15} />} onClick={() => openEditStudent(student)}>
                           Edit
                         </DropdownItem>
-                        <DropdownItem icon={<KeyRound size={15} />} onClick={() => void resetPassword(student)}>
-                          Reset password
+                        <DropdownItem icon={<KeyRound size={15} />} onClick={() => void sendMagicLink(student)}>
+                          Send login link
                         </DropdownItem>
                         <DropdownSeparator />
                         <DropdownItem icon={<Trash2 size={15} />} danger onClick={() => setDeletingStudent(student)}>
@@ -664,6 +709,7 @@ export default function AdminHome() {
                     onChange={(e) =>
                       setStudentEditForm({ ...studentEditForm, email: e.target.value })
                     }
+                    required
                   />
                 </label>
                 <label>
@@ -717,32 +763,6 @@ export default function AdminHome() {
         />
       )}
 
-      {resetPasswordResult && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal">
-            <div className="modal-icon info">
-              <KeyRound size={20} />
-            </div>
-            <h3>Password reset</h3>
-            <p>
-              New password for <strong>{resetPasswordResult.name}</strong> (
-              {resetPasswordResult.student_id}):
-            </p>
-            <p>
-              <code style={{ fontSize: '1rem' }}>{resetPasswordResult.password}</code>
-            </p>
-            <p className="muted small">
-              This is shown once and cannot be recovered afterwards — share it with the student
-              now.
-            </p>
-            <div className="modal-actions">
-              <button className="btn primary" onClick={() => setResetPasswordResult(null)}>
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </AppShell>
   );
 }

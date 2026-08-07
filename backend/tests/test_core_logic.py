@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 from app.security import (
     create_access_token,
+    create_magic_token,
     decode_token,
-    generate_password,
     hash_password,
     verify_password,
 )
@@ -42,12 +42,21 @@ def test_long_passwords_are_truncated_consistently():
     assert verify_password("a" * 72, hashed)
 
 
-def test_generated_password_avoids_lookalike_characters():
-    for _ in range(50):
-        assert not set(generate_password()) & set("O0lI1")
-
-
 # ------------------------------------------------------------------------ tokens
+
+
+def test_magic_token_carries_type_and_expires_within_ttl():
+    from datetime import UTC, datetime
+
+    from app.config import settings
+
+    token, jti = create_magic_token("student-pk")
+    claims = decode_token(token)
+    assert claims["sub"] == "student-pk"
+    assert claims["type"] == "magic"
+    assert claims["jti"] == jti
+    remaining = datetime.fromtimestamp(claims["exp"], UTC) - datetime.now(UTC)
+    assert remaining.total_seconds() <= settings.magic_link_ttl_minutes * 60
 
 
 def test_access_token_carries_attempt_binding():

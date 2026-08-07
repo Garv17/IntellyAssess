@@ -16,9 +16,19 @@ class ORMModel(BaseModel):
 # ------------------------------------------------------------------- auth
 
 
-class StudentLogin(BaseModel):
-    student_id: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=128)
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+class MagicLinkVerify(BaseModel):
+    token: str = Field(min_length=1)
+
+
+class MagicLinkSent(BaseModel):
+    message: str = "If that email is registered, a sign-in link is on its way."
+    # Only ever populated when ENVIRONMENT=development, so loadtest.py can redeem a
+    # link without a real mailbox. Never set outside dev — see request_magic_link.
+    dev_token: str | None = None
 
 
 class AdminLogin(BaseModel):
@@ -291,6 +301,11 @@ class DIGroupCreate(BaseModel):
     questions: list[DIQuestionCreate] = Field(min_length=1)
 
 
+# Must match the keys in app.services.sandbox.LANGUAGES — that's what actually
+# knows how to compile/run each one.
+CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "csharp", "php", "sql"]
+
+
 class TestCaseCreate(BaseModel):
     stdin: str = ""
     expected_stdout: str = ""
@@ -304,9 +319,9 @@ class CodingCreate(BaseModel):
     statement_md: str = Field(min_length=1)
     marks: float | None = None
     order_index: int = 0
-    allowed_languages: list[Literal["python", "java", "cpp", "javascript"]] = ["python"]
+    allowed_languages: list[CodingLanguage] = ["python"]
     time_limit_ms: int = Field(default=2000, ge=100, le=15000)
-    memory_limit_mb: int = Field(default=128, ge=16, le=512)
+    memory_limit_mb: int = Field(default=256, ge=16, le=512)
     starter_code: dict[str, str] = {}
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
@@ -403,9 +418,9 @@ class CodingUpdate(BaseModel):
     body_md: str = Field(min_length=1)
     statement_md: str = Field(min_length=1)
     marks: float | None = None
-    allowed_languages: list[Literal["python", "java", "cpp", "javascript"]] = ["python"]
+    allowed_languages: list[CodingLanguage] = ["python"]
     time_limit_ms: int = Field(default=2000, ge=100, le=15000)
-    memory_limit_mb: int = Field(default=128, ge=16, le=512)
+    memory_limit_mb: int = Field(default=256, ge=16, le=512)
     starter_code: dict[str, str] = {}
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
@@ -415,22 +430,15 @@ class CodingUpdate(BaseModel):
 class StudentCreate(BaseModel):
     student_id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
-    email: EmailStr | None = None
+    email: EmailStr
     cohort: str | None = None
-    password: str | None = None
-
-
-class StudentCredential(BaseModel):
-    student_id: str
-    name: str
-    password: str
 
 
 class StudentOut(ORMModel):
     id: uuid.UUID
     student_id: str
     name: str
-    email: str | None
+    email: str
     cohort: str | None
     is_active: bool
 
@@ -446,7 +454,14 @@ class BulkResult(BaseModel):
     created: int
     skipped: int
     errors: list[str] = []
-    credentials: list[StudentCredential] = []
+
+
+class BulkMagicLinkRequest(BaseModel):
+    student_ids: list[uuid.UUID] = Field(min_length=1, max_length=2000)
+
+
+class BulkMagicLinkQueued(BaseModel):
+    queued: int
 
 
 class PublishResult(BaseModel):

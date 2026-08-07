@@ -55,6 +55,8 @@ from app.schemas import (
     AttemptListItem,
     AttemptListPage,
     AttemptOverview,
+    BulkMagicLinkQueued,
+    BulkMagicLinkRequest,
     BulkResult,
     CodingCaseReview,
     CodingCreate,
@@ -69,6 +71,7 @@ from app.schemas import (
     ExamOut,
     LiveMonitorOut,
     LiveStudentRow,
+    MagicLinkSent,
     MCQCreate,
     MCQUpdate,
     OptionAdminOut,
@@ -86,13 +89,13 @@ from app.schemas import (
     SectionReorderRequest,
     SectionScore,
     StudentCreate,
-    StudentCredential,
     StudentOut,
     StudentUpdate,
     TestCaseAdminOut,
 )
-from app.security import dob_password, generate_password, hash_password, parse_dob
+from app.security import create_magic_token
 from app.services import export, paper
+from app.services.email import send_magic_link_email
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -956,17 +959,15 @@ async def delete_question(question_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
 # ---------------------------------------------------------------- students
 
 
-@router.post("/students", response_model=StudentCredential, status_code=status.HTTP_201_CREATED)
+@router.post("/students", response_model=StudentOut, status_code=status.HTTP_201_CREATED)
 async def create_student(
     payload: StudentCreate, admin: AdminDep, db: DbDep
-) -> StudentCredential:
-    password = payload.password or generate_password()
+) -> StudentOut:
     student = Student(
         student_id=payload.student_id,
         name=payload.name,
-        email=payload.email,
+        email=payload.email.lower(),
         cohort=payload.cohort,
-        password_hash=hash_password(password),
     )
     db.add(student)
     try:
@@ -974,9 +975,10 @@ async def create_student(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Enrollment ID {payload.student_id} already exists"
+            status.HTTP_409_CONFLICT,
+            f"Enrollment ID {payload.student_id} or email {payload.email} already exists",
         ) from None
-    return StudentCredential(student_id=student.student_id, name=student.name, password=password)
+    return StudentOut.model_validate(student)
 
 
 @router.post("/students/bulk", response_model=BulkResult)
@@ -985,61 +987,45 @@ async def bulk_upload_students(
     db: DbDep,
     file: Annotated[UploadFile, File()],
 ) -> BulkResult:
-    """CSV columns: enrollment_id, name, email (optional), cohort (optional),
-    dob (optional, DD-MM-YYYY), password (optional). `student_id` is still accepted
-    as an alias for `enrollment_id` for older CSVs.
-
-    Password precedence per row: explicit password column, else firstname+DDMMYYYY
-    derived from dob, else a random generated password (if dob is blank or unparseable).
-
-    Generated passwords are returned once, in this response only. They are never
-    recoverable afterwards, so the admin must save the CSV.
-    """
+    """CSV columns: enrollment_id, name, email, cohort (optional). `student_id` is
+    still accepted as an alias for `enrollment_id` for older CSVs. Email is required —
+    it's the magic-link sign-in identity, not just contact info."""
     text = (await file.read()).decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
 
     existing_result = await db.execute(select(Student.student_id))
-    existing = set(existing_result.scalars())
+    existing_ids = set(existing_result.scalars())
+    existing_emails = set((await db.execute(select(Student.email))).scalars())
 
     created, skipped, errors = 0, 0, []
-    credentials: list[StudentCredential] = []
 
     for line_no, row in enumerate(reader, start=2):
         sid = (row.get("enrollment_id") or row.get("student_id") or "").strip()
         name = (row.get("name") or "").strip()
-        if not sid or not name:
+        email = (row.get("email") or "").strip().lower()
+        if not sid or not name or not email:
             skipped += 1
-            errors.append(f"Row {line_no}: enrollment_id and name are required")
+            errors.append(f"Row {line_no}: enrollment_id, name and email are required")
             continue
-        if sid in existing:
+        if sid in existing_ids:
             skipped += 1
             errors.append(f"Row {line_no}: {sid} already exists")
             continue
+        if email in existing_emails:
+            skipped += 1
+            errors.append(f"Row {line_no}: email {email} already exists")
+            continue
 
-        password = (row.get("password") or "").strip()
-        if not password:
-            dob_raw = (row.get("dob") or "").strip()
-            dob = parse_dob(dob_raw) if dob_raw else None
-            if dob is not None:
-                password = dob_password(name, dob)
-            else:
-                if dob_raw:
-                    errors.append(
-                        f"Row {line_no}: unrecognized dob '{dob_raw}' — generated random "
-                        "password instead"
-                    )
-                password = generate_password()
         db.add(
             Student(
                 student_id=sid,
                 name=name,
-                email=(row.get("email") or "").strip() or None,
+                email=email,
                 cohort=(row.get("cohort") or "").strip() or None,
-                password_hash=hash_password(password),
             )
         )
-        existing.add(sid)
-        credentials.append(StudentCredential(student_id=sid, name=name, password=password))
+        existing_ids.add(sid)
+        existing_emails.add(email)
         created += 1
 
     await db.flush()
@@ -1051,9 +1037,7 @@ async def bulk_upload_students(
             meta={"created": created, "skipped": skipped},
         )
     )
-    return BulkResult(
-        created=created, skipped=skipped, errors=errors[:50], credentials=credentials
-    )
+    return BulkResult(created=created, skipped=skipped, errors=errors[:50])
 
 
 @router.get("/students", response_model=list[StudentOut])
@@ -1109,24 +1093,59 @@ async def delete_student(student_id: uuid.UUID, admin: AdminDep, db: DbDep) -> N
     )
 
 
-@router.post("/students/{student_id}/reset-password", response_model=StudentCredential)
-async def reset_student_password(
+@router.post("/students/{student_id}/send-magic-link", response_model=MagicLinkSent)
+async def send_student_magic_link(
     student_id: uuid.UUID, admin: AdminDep, db: DbDep
-) -> StudentCredential:
-    """Returns the new password once, in this response only — same rule as bulk upload."""
+) -> MagicLinkSent:
+    """Admin-triggered resend — e.g. a student says they never got the email. Bypasses
+    the self-serve cooldown since an admin is already authenticated and vouching for
+    the request."""
     student = await _get_student(db, student_id)
-    password = generate_password()
-    student.password_hash = hash_password(password)
-    await db.flush()
+    token, _ = create_magic_token(str(student.id))
+    link = f"{settings.frontend_base_url}/auth/magic?token={token}"
+    try:
+        await send_magic_link_email(student.email, student.name, link)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not send the email") from exc
     db.add(
         AuditLog(
             actor_type="admin",
             actor_id=admin.id,
-            action="student_password_reset",
+            action="magic_link_admin_resend",
             target=str(student_id),
         )
     )
-    return StudentCredential(student_id=student.student_id, name=student.name, password=password)
+    return MagicLinkSent(message=f"Sign-in link sent to {student.email}")
+
+
+@router.post("/students/magic-link/bulk", response_model=BulkMagicLinkQueued)
+async def bulk_send_magic_links(
+    payload: BulkMagicLinkRequest, admin: AdminDep, db: DbDep
+) -> BulkMagicLinkQueued:
+    """Queues a magic-link send to every given (active) student — e.g. every row
+    currently selected in a cohort-filtered view. Runs on a background queue rather
+    than this request thread; hundreds of recipients would otherwise mean a very
+    slow response (or a timeout)."""
+    result = await db.execute(
+        select(Student.id).where(Student.id.in_(payload.student_ids), Student.is_active.is_(True))
+    )
+    ids = [str(sid) for sid in result.scalars()]
+    if not ids:
+        return BulkMagicLinkQueued(queued=0)
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="magic_link_bulk_send",
+            meta={"count": len(ids)},
+        )
+    )
+
+    from app.tasks.mailer_tasks import send_bulk_magic_links
+
+    send_bulk_magic_links.delay(ids)
+    return BulkMagicLinkQueued(queued=len(ids))
 
 
 # ----------------------------------------------------------------- publish
