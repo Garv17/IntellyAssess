@@ -1,4 +1,4 @@
-import { BookMarked, Code2, ListChecks, Plus, Rocket, Table2, Upload } from 'lucide-react';
+import { BookMarked, Code2, Database, ListChecks, Plus, Rocket, Table2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, type PublishResult, type Section } from '../../api';
@@ -10,8 +10,10 @@ import DiForm from './exam-builder/DiForm';
 import ExistingQuestions from './exam-builder/ExistingQuestions';
 import McqForm from './exam-builder/McqForm';
 import QuestionBankPanel from './exam-builder/QuestionBankPanel';
+import SqlQuestionForm from './exam-builder/SqlQuestionForm';
 
 type Tab = 'mcq' | 'di' | 'coding' | 'bulk' | 'bank';
+type CodingFormat = 'programming' | 'sql';
 
 export default function ExamBuilder() {
   const { examId = '' } = useParams();
@@ -19,6 +21,7 @@ export default function ExamBuilder() {
   const [sections, setSections] = useState<Section[]>([]);
   const [activeSection, setActiveSection] = useState<string>('');
   const [tab, setTab] = useState<Tab>('mcq');
+  const [codingFormat, setCodingFormat] = useState<CodingFormat>('programming');
   const [error, setError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
@@ -186,7 +189,29 @@ export default function ExamBuilder() {
             <DiForm sectionId={activeSection} onDone={() => void load()} onError={setError} />
           )}
           {tab === 'coding' && (
-            <CodingForm sectionId={activeSection} onDone={() => void load()} onError={setError} />
+            <div className="stack">
+              <div className="problem-type-toggle">
+                <button
+                  type="button"
+                  className={`btn ${codingFormat === 'programming' ? 'primary' : ''}`}
+                  onClick={() => setCodingFormat('programming')}
+                >
+                  <Code2 size={14} /> Programming Language
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${codingFormat === 'sql' ? 'primary' : ''}`}
+                  onClick={() => setCodingFormat('sql')}
+                >
+                  <Database size={14} /> SQL / Database
+                </button>
+              </div>
+              {codingFormat === 'programming' ? (
+                <CodingForm sectionId={activeSection} onDone={() => void load()} onError={setError} />
+              ) : (
+                <SqlQuestionForm sectionId={activeSection} onDone={() => void load()} onError={setError} />
+              )}
+            </div>
           )}
           {tab === 'bulk' && (
             <BulkForm sectionId={activeSection} onDone={() => void load()} onError={setError} />

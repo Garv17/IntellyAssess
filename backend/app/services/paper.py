@@ -127,6 +127,9 @@ def _question_out(
             function_name=problem.function_name,
             return_type=problem.return_type,
             parameters=problem.parameters,
+            sql_dialect=problem.sql_dialect,
+            sql_schema_sql=problem.sql_schema_sql,
+            sql_result_columns=problem.sql_result_columns,
             # Only sample cases cross the wire. Hidden cases stay server-side.
             sample_test_cases=[
                 TestCaseOut(

@@ -6,6 +6,7 @@ import Collapsible from './Collapsible';
 import Markdown from './Markdown';
 import ParamValueInput from './ParamValueInput';
 import Splitter from './Splitter';
+import SqlWorkspace from './SqlWorkspace';
 import Tabs from './Tabs';
 
 const PANE_SIZES_KEY = 'coding-pane-sizes';
@@ -82,15 +83,30 @@ function caseSummary(parameters: ParamDef[] | null, paramValues: unknown[] | nul
   return parameters.map((p, i) => `${p.name}=${JSON.stringify(paramValues[i])}`).join(', ');
 }
 
-export default function CodingView({
-  question,
-  answer,
-  onChange,
-}: {
+type CodingViewProps = {
   question: Question;
   answer?: AnswerSave;
   onChange: (id: string, patch: Partial<AnswerSave>, immediate: boolean) => void;
-}) {
+};
+
+// SQL questions get a dedicated workspace (schema explorer, no language select,
+// result grid) instead of the generic multi-language layout below — a SQL
+// question only ever has "sql" as its sole allowed language. This dispatch has
+// to happen before any hooks run, so it stays in a plain (hook-free) wrapper
+// rather than as an early return inside GenericCodingView.
+export default function CodingView(props: CodingViewProps) {
+  const problem = props.question.coding_problem!;
+  if (problem.allowed_languages.length === 1 && problem.allowed_languages[0] === 'sql') {
+    return <SqlWorkspace {...props} />;
+  }
+  return <GenericCodingView {...props} />;
+}
+
+function GenericCodingView({
+  question,
+  answer,
+  onChange,
+}: CodingViewProps) {
   const problem = question.coding_problem!;
   const [language, setLanguage] = useState(answer?.language ?? problem.allowed_languages[0]);
   const [run, setRun] = useState<CodeRun | null>(null);

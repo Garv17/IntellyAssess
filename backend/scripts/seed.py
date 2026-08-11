@@ -295,20 +295,23 @@ async def seed(student_count: int) -> None:
                 time_limit_ms=2000,
                 memory_limit_mb=128,
                 starter_code={"sql": "SELECT name FROM students WHERE marks >= 70 ORDER BY name;\n"},
+                sql_dialect="sqlite",
+                # Schema only — each case below seeds its own rows via per-case setup,
+                # since the sample and hidden case intentionally use disjoint data.
+                sql_schema_sql="CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);",
+                sql_result_columns=["name"],
             )
             db.add(sql_problem)
             await db.flush()
 
             sql_cases = [
                 (
-                    "CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);\n"
                     "INSERT INTO students VALUES (1,'Alice',80),(2,'Bob',65),(3,'Carol',90);",
                     "Alice\nCarol",
                     True,
                     1,
                 ),
                 (
-                    "CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);\n"
                     "INSERT INTO students VALUES (1,'Dan',72),(2,'Eve',50),(3,'Frank',99),"
                     "(4,'Grace',70);",
                     "Dan\nFrank\nGrace",
@@ -380,34 +383,36 @@ async def seed(student_count: int) -> None:
                         "   AND SUM(o.amount) > 10000;\n"
                     )
                 },
+                sql_dialect="sqlite",
+                # Schema + base data shared by every case below; each hidden case
+                # only adds its own edge-case rows via per-case setup instead of
+                # repeating the full DDL + base data (the old per-test-case model).
+                sql_schema_sql=(
+                    "CREATE TABLE Customers (customer_id INT PRIMARY KEY, customer_name VARCHAR(50));\n"
+                    "CREATE TABLE Products (product_id VARCHAR(5) PRIMARY KEY, category VARCHAR(50));\n"
+                    "CREATE TABLE Orders (order_id INT PRIMARY KEY, "
+                    "customer_id INT REFERENCES Customers(customer_id), "
+                    "product_id VARCHAR(5) REFERENCES Products(product_id), amount INT);\n"
+                    "INSERT INTO Customers (customer_id, customer_name) VALUES "
+                    "(1,'Aarav'),(2,'Bhavna'),(3,'Chetan'),(4,'Divya');\n"
+                    "INSERT INTO Products (product_id, category) VALUES "
+                    "('P1','Electronics'),('P2','Electronics'),('P3','Clothing'),"
+                    "('P4','Grocery'),('P5','Clothing');\n"
+                    "INSERT INTO Orders (order_id, customer_id, product_id, amount) VALUES "
+                    "(1,1,'P1',6000),(2,1,'P3',3000),(3,1,'P4',2000),(4,2,'P1',8000),"
+                    "(5,2,'P2',5000),(6,3,'P1',4000),(7,3,'P3',3000),(8,4,'P2',7000),"
+                    "(9,4,'P5',6000);\n"
+                ),
+                sql_result_columns=["customer_name"],
             )
             db.add(multi_table_problem)
             await db.flush()
-
-            multi_table_ddl = (
-                "CREATE TABLE Customers (customer_id INT PRIMARY KEY, customer_name VARCHAR(50));\n"
-                "CREATE TABLE Products (product_id VARCHAR(5) PRIMARY KEY, category VARCHAR(50));\n"
-                "CREATE TABLE Orders (order_id INT PRIMARY KEY, "
-                "customer_id INT REFERENCES Customers(customer_id), "
-                "product_id VARCHAR(5) REFERENCES Products(product_id), amount INT);\n"
-            )
-            multi_table_base_data = (
-                "INSERT INTO Customers (customer_id, customer_name) VALUES "
-                "(1,'Aarav'),(2,'Bhavna'),(3,'Chetan'),(4,'Divya');\n"
-                "INSERT INTO Products (product_id, category) VALUES "
-                "('P1','Electronics'),('P2','Electronics'),('P3','Clothing'),"
-                "('P4','Grocery'),('P5','Clothing');\n"
-                "INSERT INTO Orders (order_id, customer_id, product_id, amount) VALUES "
-                "(1,1,'P1',6000),(2,1,'P3',3000),(3,1,'P4',2000),(4,2,'P1',8000),"
-                "(5,2,'P2',5000),(6,3,'P1',4000),(7,3,'P3',3000),(8,4,'P2',7000),"
-                "(9,4,'P5',6000);\n"
-            )
 
             multi_table_cases = [
                 # Base data only -> Aarav (14k/2 cat), Divya (13k/2 cat); Bhavna and
                 # Chetan each stay within a single category or under the spend bar.
                 (
-                    multi_table_ddl + multi_table_base_data,
+                    "",
                     "Aarav\nDivya",
                     True,
                     1,
@@ -415,8 +420,7 @@ async def seed(student_count: int) -> None:
                 # Edge case 1: Esha spends exactly 10,000 across 2 categories -> the
                 # strict "> 10000" must exclude her; result is unchanged.
                 (
-                    multi_table_ddl + multi_table_base_data
-                    + "INSERT INTO Customers VALUES (5,'Esha');\n"
+                    "INSERT INTO Customers VALUES (5,'Esha');\n"
                     "INSERT INTO Orders VALUES (10,5,'P1',6000),(11,5,'P3',4000);\n",
                     "Aarav\nDivya",
                     False,
@@ -425,8 +429,7 @@ async def seed(student_count: int) -> None:
                 # Edge case 2: Farhan spends 12,001 but in a single category ->
                 # the >=2-categories condition must exclude him.
                 (
-                    multi_table_ddl + multi_table_base_data
-                    + "INSERT INTO Customers VALUES (6,'Farhan');\n"
+                    "INSERT INTO Customers VALUES (6,'Farhan');\n"
                     "INSERT INTO Orders VALUES (12,6,'P4',12000);\n",
                     "Aarav\nDivya",
                     False,
@@ -435,16 +438,14 @@ async def seed(student_count: int) -> None:
                 # Edge case 3: a duplicate purchase pushes Chetan's total spend over
                 # 10,000 while he already had 2 categories -> he now qualifies.
                 (
-                    multi_table_ddl + multi_table_base_data
-                    + "INSERT INTO Orders VALUES (14,3,'P1',4000);\n",
+                    "INSERT INTO Orders VALUES (14,3,'P1',4000);\n",
                     "Aarav\nChetan\nDivya",
                     False,
                     2,
                 ),
                 # All edge cases combined.
                 (
-                    multi_table_ddl + multi_table_base_data
-                    + "INSERT INTO Customers VALUES (5,'Esha'),(6,'Farhan');\n"
+                    "INSERT INTO Customers VALUES (5,'Esha'),(6,'Farhan');\n"
                     "INSERT INTO Orders VALUES (10,5,'P1',6000),(11,5,'P3',4000),"
                     "(12,6,'P4',12000),(14,3,'P1',4000);\n",
                     "Aarav\nChetan\nDivya",

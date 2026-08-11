@@ -150,9 +150,8 @@ a { color: var(--primary); }
 
 .brand { display: flex; align-items: center; gap: 0.55rem; font-weight: 650; letter-spacing: -0.01em; }
 .brand-mark {
-  width: 28px; height: 28px; border-radius: 8px;
-  background: linear-gradient(135deg, var(--blue-600), var(--violet-600));
-  display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.85rem;
+  width: 28px; height: 28px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
@@ -517,7 +516,7 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* =================================================================== tabs */
 
-.tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.1rem; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.1rem; flex-shrink: 0; }
 .tab {
   padding: 0.55rem 0.95rem; border: none; background: none; cursor: pointer;
   font: inherit; font-weight: 550; color: var(--muted); border-bottom: 2px solid transparent;
@@ -678,10 +677,14 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* ----------------------------------------------------------------- exam */
 
-.exam { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+/* Desktop: pin the page to exactly one viewport tall so nothing but the panels
+   below ever scrolls the whole document (see .exam-body/.question-pane/.palette) —
+   the >980px band only, since the mobile layout below still wants normal page
+   scroll once everything stacks into a single column. */
+.exam { height: 100vh; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
 
 .exam-bar {
-  position: sticky; top: 0; z-index: 30;
+  position: sticky; top: 0; z-index: 30; flex-shrink: 0;
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1rem;
   padding: 0.7rem 1.5rem;
   background: var(--surface);
@@ -690,9 +693,12 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .exam-bar > div:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .exam-bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; flex-shrink: 0; }
-.exam-progress { padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); }
+.exam-progress { padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .exam-progress .progress-track { margin: 0.55rem 0; }
 .exam-progress-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); font-weight: 600; }
+/* The low-time/error banners sit between the progress bar and the body — they
+   must never get squeezed by the body's flex:1 fill below. */
+.exam > .banner { flex-shrink: 0; }
 
 .timer {
   font-variant-numeric: tabular-nums;
@@ -721,19 +727,26 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 /* minmax(0, 1fr), not a bare 1fr: a bare 1fr track refuses to shrink a grid item
    below its content's min-content width ("grid blowout") — with a resizable coding
    pane inside, that content width can be large, so without the 0-minimum the whole
-   row overflows the viewport horizontally instead of the column ever shrinking. */
-.exam-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.25rem; padding: 1.25rem 1.5rem; align-items: start; }
+   row overflows the viewport horizontally instead of the column ever shrinking.
+   flex:1/min-height:0/overflow:hidden makes this row fill exactly what's left of
+   the viewport under the header/progress bar (see .exam above); align-items:
+   stretch then gives both the question pane and the palette that same full height
+   so each one scrolls internally instead of growing the whole page. */
+.exam-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.25rem; padding: 1.25rem 1.5rem;
+  align-items: stretch; flex: 1; min-height: 0; overflow: hidden;
+}
 
 .question-pane {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.5rem;
-  min-height: 60vh;
   box-shadow: var(--shadow-xs);
+  display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
 }
 
-.question-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+.question-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0; }
 .pill {
   font-size: 0.74rem; padding: 0.22rem 0.6rem; font-weight: 600;
   background: var(--gray-100); border-radius: var(--radius-full); color: var(--muted-strong);
@@ -743,7 +756,9 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 .question-body { font-size: 1.02rem; margin: 0.5rem 0 1.1rem; white-space: pre-wrap; }
 
-.question-fade { animation: q-fade 0.18s var(--ease); }
+/* The one part of .question-pane allowed to scroll — everything above
+   (question-head) and below (nav-row) stays pinned via flex-shrink:0. */
+.question-fade { animation: q-fade 0.18s var(--ease); flex: 1; min-height: 0; overflow-y: auto; }
 @keyframes q-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .options { display: grid; gap: 0.55rem; }
@@ -780,21 +795,23 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .code-block.small { padding: 0.45rem; font-size: 0.78rem; max-width: 220px; }
 
-.nav-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem; margin-top: 1.5rem; align-items: center; }
+.nav-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem; margin-top: 1.5rem; align-items: center; flex-shrink: 0; }
 .nav-hint { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
 .nav-next-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .nav-next-group .review-toggle { margin-left: 0; }
 
 /* --------------------------------------------------------------- palette */
 
+/* Stretches to match .question-pane's height (both are align-items: stretch grid
+   children of .exam-body) and scrolls internally — no magic-number calc() against
+   the header height, so it stays correct however tall the header/banners are. */
 .palette {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.1rem;
-  position: sticky;
-  top: 5rem;
-  max-height: calc(100vh - 7rem);
+  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   box-shadow: var(--shadow-xs);
 }
@@ -823,10 +840,13 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* ---------------------------------------------------------------- coding */
 
-.coding { display: flex; align-items: flex-start; gap: 0; }
+/* Fills the full height of .question-fade (itself already viewport-bounded, see
+   above) so both columns below use all available vertical space instead of the
+   old fixed-px/vh caps, which either wasted space or overflowed depending on zoom. */
+.coding { display: flex; align-items: stretch; gap: 0; height: 100%; min-height: 0; }
 .coding-statement {
   background: var(--surface-sunken); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 1rem; max-height: min(560px, 65vh); overflow-y: auto;
+  border-radius: var(--radius-md); padding: 1rem; height: 100%; overflow-y: auto;
   flex-shrink: 0;
   /* The splitter lets a student drag this up to 640px wide (see Exam.tsx), but a fixed
      px cap alone still lets it dominate a narrower/zoomed-in viewport and starve the
@@ -876,15 +896,153 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .example-card-grid pre { background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.55rem; }
 .example-card-explanation { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
 
-.coding-editor { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.editor-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+/* ------------------------------------------------------------- sql preview */
+
+.sql-warning {
+  display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.8rem;
+  color: var(--danger); background: var(--danger-soft); border: 1px solid var(--red-100);
+  border-radius: var(--radius-sm); padding: 0.5rem 0.65rem; margin: 0 0 0.6rem;
+}
+.sql-warning svg { flex-shrink: 0; margin-top: 0.1rem; }
+
+.sql-table-block { margin-bottom: 0.85rem; }
+.sql-table-block:last-child { margin-bottom: 0; }
+.sql-table-name {
+  display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left;
+  border: none; background: none; padding: 0; cursor: pointer; color: var(--text);
+  font-weight: 650; font-size: 0.85rem; margin-bottom: 0.35rem;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+}
+.sql-table-name .sql-eq { color: var(--muted); font-weight: 500; }
+.sql-table-row-count {
+  font-weight: 500; font-size: 0.72rem; text-transform: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  margin-left: auto;
+}
+.sql-col-name { margin-right: 0.3rem; }
+.sql-key-tag {
+  display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.6rem;
+  font-weight: 700; letter-spacing: 0.02em; border-radius: 4px; padding: 0.05rem 0.3rem;
+  margin-right: 0.3rem; text-transform: none; vertical-align: middle;
+}
+.sql-key-tag.pk { background: var(--amber-100); color: var(--amber-700); }
+.sql-key-tag.fk { background: var(--blue-100); color: var(--primary); }
+.sql-col-type {
+  display: block; font-weight: 500; font-size: 0.66rem; color: var(--muted);
+  text-transform: lowercase; letter-spacing: 0.01em;
+}
+.sql-data-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sql-data-table, .sql-result-table {
+  width: 100%; border-collapse: collapse; font-size: 0.78rem;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+}
+.sql-data-table th, .sql-data-table td,
+.sql-result-table th, .sql-result-table td {
+  text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border); white-space: nowrap;
+}
+.sql-data-table th:last-child, .sql-data-table td:last-child,
+.sql-result-table th:last-child, .sql-result-table td:last-child { border-right: none; }
+.sql-data-table tr:last-child td, .sql-result-table tr:last-child td { border-bottom: none; }
+.sql-data-table th, .sql-result-table th {
+  background: var(--surface-sunken); color: var(--text); font-weight: 650;
+}
+.sql-more-rows { margin-top: 0.3rem; }
+.sql-result-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sql-result-table-wrap { overflow-x: auto; }
+.sql-row-mismatch td { background: var(--red-50); color: var(--red-700); }
+.sql-stderr {
+  background: var(--red-50); border: 1px solid var(--red-100); color: var(--red-700);
+  border-radius: var(--radius-sm); padding: 0.4rem 0.55rem; font-size: 0.78rem;
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+.sql-schema-preview.compact .sql-table-block { margin-bottom: 0.55rem; }
+.sql-schema-preview.compact .sql-data-table,
+.sql-result-table-wrap.compact .sql-result-table { font-size: 0.72rem; }
+.sql-schema-preview.compact .sql-data-table th,
+.sql-schema-preview.compact .sql-data-table td,
+.sql-result-table-wrap.compact .sql-result-table th,
+.sql-result-table-wrap.compact .sql-result-table td { padding: 0.2rem 0.4rem; }
+.sql-result-caption { padding: 0.35rem 0.1rem 0; }
+
+/* --------------------------------------------------------- sql workspace */
+
+/* Dedicated student layout for SQL questions — replaces .coding/.coding-statement
+   for this question type (see CodingView.tsx's isSql dispatch to SqlWorkspace). */
+.sql-workspace { display: flex; align-items: stretch; gap: 0; height: 100%; min-height: 0; }
+.sql-workspace-left {
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 1rem; height: 100%; overflow-y: auto;
+  flex-shrink: 0; max-width: 60%;
+}
+.sql-workspace-main { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; min-height: 0; }
+
+.sql-dialect-badge {
+  display: inline-flex; align-items: center; font-size: 0.72rem; font-weight: 650;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0.2rem 0.55rem; color: var(--text);
+}
+
+/* Same scroll-region role as .bottom-panel in the generic coding view, but with
+   the SQL-specific case-chip row + side-by-side result grids instead of tabs. */
+.sql-results-panel { margin-top: 0.85rem; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; }
+.sql-case-chip-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.sql-case-chip {
+  border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm);
+  padding: 0.3rem 0.75rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; color: var(--text);
+}
+.sql-case-chip:hover { background: var(--gray-100); }
+.sql-case-chip.active { border-color: var(--primary); color: var(--primary); background: var(--blue-100); }
+
+.sql-result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; align-items: start; }
+.sql-result-heading { font-size: 0.78rem; font-weight: 650; color: var(--muted-strong); margin-bottom: 0.35rem; }
+
+.sql-error-panel {
+  display: flex; align-items: flex-start; gap: 0.5rem; color: var(--red-700);
+  background: var(--red-50); border: 1px solid var(--red-100); border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+}
+.sql-error-panel svg { flex-shrink: 0; margin-top: 0.15rem; }
+.sql-error-panel pre { margin: 0; white-space: pre-wrap; font-size: 0.8rem; background: none; border: none; padding: 0; }
+
+@media (max-width: 980px) {
+  .sql-workspace { flex-direction: column; align-items: stretch; height: auto; }
+  .sql-workspace-left { width: 100% !important; flex-basis: auto !important; max-width: 100%; height: auto; max-height: 320px; }
+  .sql-workspace-main { width: 100%; height: auto; }
+  .sql-results-panel { flex: none; overflow: visible; }
+  .sql-result-columns { grid-template-columns: 1fr; }
+}
+
+/* -------------------------------------------------- admin sql question preview */
+
+.modal.xlarge { max-width: 1100px; }
+.sql-preview-modal { padding: 1.1rem 1.25rem; max-height: 85vh; display: flex; flex-direction: column; }
+.sql-preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.sql-preview-header h3 { margin: 0; }
+.sql-preview-body { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; overflow-y: auto; min-height: 0; }
+.sql-preview-left, .sql-preview-right { overflow-y: auto; min-height: 0; }
+.sql-preview-editor {
+  background: #1e1e1e; color: #d4d4d4; border-radius: var(--radius-sm); padding: 0.75rem;
+  font-size: 0.82rem; white-space: pre-wrap; margin: 0.5rem 0;
+}
+@media (max-width: 900px) {
+  .sql-preview-body { grid-template-columns: 1fr; }
+}
+
+.coding-editor { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; min-height: 0; }
+.editor-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; flex-shrink: 0; }
 .editor-bar select { width: auto; }
 .editor-bar .run-target { margin-left: auto; }
-.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; flex-shrink: 0; }
 
 /* ---------------------------------------------------------- bottom tab panel */
 
-.bottom-panel { margin-top: 0.85rem; }
+/* The one scrollable region in the editor column — grows to fill whatever's left
+   under the (user-resizable, see Splitter/paneSizes in CodingView.tsx) editor
+   frame, and scrolls its own content instead of growing the page when a test
+   case's output is long. */
+.bottom-panel { margin-top: 0.85rem; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .target-case-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .target-case {
   display: flex; align-items: center; gap: 0.6rem; text-align: left;
@@ -1023,18 +1181,27 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 
 @media (max-width: 980px) {
-  .exam-body { grid-template-columns: minmax(0, 1fr); }
-  .palette { position: static; max-height: none; order: -1; }
+  /* Below this width everything stacks into one column and the page goes back to
+     scrolling normally end-to-end — the fill-the-viewport/scroll-per-panel scheme
+     above is a desktop-only optimization, not something a stacked mobile layout
+     needs or wants. */
+  .exam { height: auto; overflow: visible; }
+  .exam-body { grid-template-columns: minmax(0, 1fr); flex: none; overflow: visible; }
+  .question-pane { height: auto; min-height: 60vh; overflow: visible; }
+  .question-fade { flex: none; overflow: visible; }
+  .palette { position: static; max-height: none; height: auto; order: -1; }
   .palette-grid { grid-template-columns: repeat(10, 1fr); }
   /* Below this width, dragging a 260-640px-wide statement pane fights the viewport
      more than it helps — collapse to a single column and drop the resize handles.
-     align-items: stretch is the cross-axis rule once flex-direction flips to
-     column, so both the statement and the editor fill the available width instead
-     of the editor sitting at its own cramped natural width below a full-width
-     statement pane (the desktop align-items: flex-start is a row-axis choice). */
-  .coding { flex-direction: column; align-items: stretch; }
-  .coding-statement { width: 100% !important; flex-basis: auto !important; max-width: 100%; max-height: 320px; }
-  .coding-editor { width: 100%; }
+     Desktop's align-items: stretch matches both columns to the row's height; once
+     flex-direction flips to column here, that same property instead matches both
+     to the container's *width*, so the editor fills full-width below a full-width
+     statement pane instead of sitting at its own cramped natural width. Also drop
+     the desktop height: 100% — a column stack should size to its own content. */
+  .coding { flex-direction: column; align-items: stretch; height: auto; }
+  .coding-statement { width: 100% !important; flex-basis: auto !important; max-width: 100%; height: auto; max-height: 320px; }
+  .coding-editor { width: 100%; height: auto; }
+  .bottom-panel { flex: none; overflow: visible; }
   .splitter-horizontal { display: none; }
   .case-grid { grid-template-columns: 1fr; }
   .card-grid { grid-template-columns: 1fr; }

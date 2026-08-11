@@ -1,7 +1,8 @@
-import { CalendarClock, CheckCircle2, FileBarChart2, LogOut, TimerReset } from 'lucide-react';
+import { CalendarClock, CheckCircle2, LogOut, TimerReset } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, api, tokens, type ExamSummary, type Me } from '../api';
+import logo from '../assets/logo.png';
 import { Identity } from '../components/Avatar';
 import DropdownMenu, { DropdownItem } from '../components/DropdownMenu';
 import EmptyState from '../components/EmptyState';
@@ -63,9 +64,7 @@ export default function Dashboard() {
     <div className="shell">
       <header className="top-bar">
         <span className="brand">
-          <span className="brand-mark">
-            <FileBarChart2 size={16} />
-          </span>
+          <img src={logo} alt="IntellyAssess" className="brand-mark" />
           IntellyAssess
         </span>
         <div className="top-bar-right">

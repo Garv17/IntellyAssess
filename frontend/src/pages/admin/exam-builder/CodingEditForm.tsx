@@ -9,7 +9,6 @@ import {
   MarkdownField,
   PARAM_TYPES,
   ParametersEditor,
-  SqlCaseFields,
   TagInput,
   boilerplateHint,
   codingCaseHint,
@@ -39,7 +38,6 @@ export default function CodingEditForm({
   const [marks, setMarks] = useState<number | null>(question.marks);
   const [tags, setTags] = useState<string[]>(question.tags);
   const [difficulty, setDifficulty] = useState<Difficulty | null>(question.difficulty);
-  const [sqlRefQuery, setSqlRefQuery] = useState(problem?.starter_code?.sql ?? '');
   const [cases, setCases] = useState(
     (problem?.test_cases ?? []).map((c) => ({
       stdin: c.stdin,
@@ -51,7 +49,6 @@ export default function CodingEditForm({
       weight: c.weight,
     })),
   );
-  const isSqlOnly = languages.length > 0 && languages.every((l) => l === 'sql');
 
   const switchToFunctionMode = () => {
     setProblemType('function');
@@ -210,21 +207,7 @@ export default function CodingEditForm({
         <DifficultyPicker value={difficulty} onChange={setDifficulty} />
       </div>
 
-      {problemType === 'stdio' && <p className="muted small">{codingCaseHint(languages)}</p>}
-      {problemType === 'stdio' && isSqlOnly && (
-        <label>
-          Reference query (used only to run the previews below — not saved, not shown to
-          students)
-          <textarea
-            value={sqlRefQuery}
-            rows={4}
-            spellCheck={false}
-            className="code-textarea"
-            placeholder="SELECT ... FROM ... GROUP BY ... HAVING ...;"
-            onChange={(e) => setSqlRefQuery(e.target.value)}
-          />
-        </label>
-      )}
+      {problemType === 'stdio' && <p className="muted small">{codingCaseHint()}</p>}
 
       {cases.map((c, i) => (
         <fieldset key={i} className="sub-card">
@@ -259,17 +242,6 @@ export default function CodingEditForm({
                 }}
               />
             </div>
-          ) : isSqlOnly ? (
-            <SqlCaseFields
-              stdin={c.stdin}
-              expectedStdout={c.expected_stdout}
-              referenceQuery={sqlRefQuery}
-              onChange={(next) => {
-                const nextCases = [...cases];
-                nextCases[i] = { ...c, ...next };
-                setCases(nextCases);
-              }}
-            />
           ) : (
             <div className="case-grid">
               <label>

@@ -10,7 +10,6 @@ import {
   MarkdownField,
   PARAM_TYPES,
   ParametersEditor,
-  SqlCaseFields,
   TagInput,
   boilerplateHint,
   codingCaseHint,
@@ -30,13 +29,11 @@ export default function CodingForm({ sectionId, onDone, onError }: FormProps) {
   const [parameters, setParameters] = useState<ParamDef[]>([]);
   const [tags, setTags] = useState<string[]>([]);
   const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
-  const [sqlRefQuery, setSqlRefQuery] = useState('');
   const emptyCases = () => [
     { stdin: '', expected_stdout: '', param_values: null as unknown[] | null, expected_value: null as unknown, explanation: '', is_sample: true, weight: 1 },
     { stdin: '', expected_stdout: '', param_values: null as unknown[] | null, expected_value: null as unknown, explanation: '', is_sample: false, weight: 1 },
   ];
   const [cases, setCases] = useState(emptyCases());
-  const isSqlOnly = languages.length > 0 && languages.every((l) => l === 'sql');
 
   const switchToFunctionMode = () => {
     setProblemType('function');
@@ -74,7 +71,6 @@ export default function CodingForm({ sectionId, onDone, onError }: FormProps) {
       setReturnType('int');
       setParameters([]);
       setCases(emptyCases());
-      setSqlRefQuery('');
       onDone();
       toast.success('Problem added');
     } catch (err) {
@@ -200,21 +196,7 @@ export default function CodingForm({ sectionId, onDone, onError }: FormProps) {
         At least one sample and one hidden case are required. Students can only run against
         samples; hidden cases decide the score.
       </p>
-      {problemType === 'stdio' && <p className="muted small">{codingCaseHint(languages)}</p>}
-      {problemType === 'stdio' && isSqlOnly && (
-        <label>
-          Reference query (used only to run the previews below — not saved, not shown to
-          students)
-          <textarea
-            value={sqlRefQuery}
-            rows={4}
-            spellCheck={false}
-            className="code-textarea"
-            placeholder="SELECT ... FROM ... GROUP BY ... HAVING ...;"
-            onChange={(e) => setSqlRefQuery(e.target.value)}
-          />
-        </label>
-      )}
+      {problemType === 'stdio' && <p className="muted small">{codingCaseHint()}</p>}
 
       {cases.map((c, i) => (
         <fieldset key={i} className="sub-card">
@@ -249,17 +231,6 @@ export default function CodingForm({ sectionId, onDone, onError }: FormProps) {
                 }}
               />
             </div>
-          ) : isSqlOnly ? (
-            <SqlCaseFields
-              stdin={c.stdin}
-              expectedStdout={c.expected_stdout}
-              referenceQuery={sqlRefQuery}
-              onChange={(next) => {
-                const nextCases = [...cases];
-                nextCases[i] = { ...c, ...next };
-                setCases(nextCases);
-              }}
-            />
           ) : (
             <div className="case-grid">
               <label>

@@ -1,7 +1,8 @@
-import { FileBarChart2, LayoutGrid, LogOut, Menu, Users, X } from 'lucide-react';
+import { LayoutGrid, LogOut, Menu, Users, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { tokens } from '../api';
+import logo from '../assets/logo.png';
 import { Identity } from './Avatar';
 import DropdownMenu, { DropdownItem } from './DropdownMenu';
 
@@ -33,9 +34,7 @@ export default function AppShell({ title, actions, adminName, children }: Props)
       <aside className={`app-sidebar ${mobileOpen ? 'open' : ''}`}>
         <div className="app-sidebar-brand">
           <span className="brand">
-            <span className="brand-mark">
-              <FileBarChart2 size={16} />
-            </span>
+            <img src={logo} alt="IntellyAssess" className="brand-mark" />
             IntellyAssess
           </span>
         </div>

@@ -1,7 +1,8 @@
-import { AlertCircle, FileBarChart2, Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, tokens } from '../api';
+import logo from '../assets/logo.png';
 
 function AdminLoginForm() {
   const navigate = useNavigate();
@@ -28,9 +29,7 @@ function AdminLoginForm() {
   return (
     <form className="card auth-card" onSubmit={submit}>
       <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.9rem' }}>
-        <span className="brand-mark" style={{ width: 40, height: 40, borderRadius: 11 }}>
-          <FileBarChart2 size={20} />
-        </span>
+        <img src={logo} alt="IntellyAssess" className="brand-mark" style={{ width: 44, height: 44 }} />
       </div>
       <h1 style={{ textAlign: 'center' }}>Administrator sign in</h1>
       <p className="muted" style={{ textAlign: 'center' }}>Manage exams, students and results.</p>
@@ -81,9 +80,7 @@ function StudentLoginForm() {
   return (
     <div className="card auth-card">
       <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.9rem' }}>
-        <span className="brand-mark" style={{ width: 40, height: 40, borderRadius: 11 }}>
-          <FileBarChart2 size={20} />
-        </span>
+        <img src={logo} alt="IntellyAssess" className="brand-mark" style={{ width: 44, height: 44 }} />
       </div>
       <h1 style={{ textAlign: 'center' }}>Examination portal</h1>
       <p className="muted" style={{ textAlign: 'center' }}>

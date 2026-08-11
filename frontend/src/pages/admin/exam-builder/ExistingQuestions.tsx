@@ -6,6 +6,7 @@ import { SkeletonText } from '../../../components/Skeleton';
 import { useToast } from '../../../components/Toast';
 import CodingEditForm from './CodingEditForm';
 import McqEditForm from './McqEditForm';
+import SqlQuestionEditForm from './SqlQuestionEditForm';
 
 type Block =
   | { kind: 'question'; order: number; question: QuestionDetail }
@@ -219,6 +220,15 @@ function QuestionRow({ question, dragProps, wrapClass, onSaved, onDelete, onErro
       setEditing(false);
       onSaved();
     };
+    const isSqlQuestion =
+      question.type === 'coding' &&
+      question.coding_problem?.allowed_languages.length === 1 &&
+      question.coding_problem.allowed_languages[0] === 'sql';
+    if (isSqlQuestion) {
+      return (
+        <SqlQuestionEditForm question={question} onDone={done} onCancel={() => setEditing(false)} onError={onError} />
+      );
+    }
     return question.type === 'coding' ? (
       <CodingEditForm question={question} onDone={done} onCancel={() => setEditing(false)} onError={onError} />
     ) : (
