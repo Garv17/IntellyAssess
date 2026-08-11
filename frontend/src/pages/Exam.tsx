@@ -1,26 +1,9 @@
-import {
-  AlertCircle,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Flag,
-  Loader2,
-  Play,
-  Timer,
-  WifiOff,
-} from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Flag, Timer } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  ApiError,
-  api,
-  type AnswerSave,
-  type CodeRun,
-  type ExamPaper,
-  type Question,
-} from '../api';
-import CodeEditor from '../components/CodeEditor';
-import { useToast } from '../components/Toast';
+import { ApiError, api, type AnswerSave, type ExamPaper } from '../api';
+import QuestionView from '../components/QuestionView';
+import SaveIndicator from '../components/SaveIndicator';
 import { useAutoSave } from '../hooks/useAutoSave';
 import { useExamTimer } from '../hooks/useExamTimer';
 
@@ -42,6 +25,7 @@ export default function Exam() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [tabWarningCount, setTabWarningCount] = useState(0);
   const submittedRef = useRef(false);
 
   // The timer and the auto-save hook both need to trigger submission, but `finish`
@@ -49,10 +33,9 @@ export default function Exam() {
   const finishRef = useRef<(auto: boolean) => void>(() => {});
   const expire = useCallback(() => finishRef.current(true), []);
 
-  const toast = useToast();
   const onTabSwitch = useCallback(() => {
-    toast.error('Tab switch detected. This has been recorded for review.');
-  }, [toast]);
+    setTabWarningCount((c) => c + 1);
+  }, []);
 
   const autoSave = useAutoSave({ debounceMs: 1200, onExpired: expire });
   const { formatted, seconds } = useExamTimer(initialSeconds, expire, onTabSwitch);
@@ -142,16 +125,18 @@ export default function Exam() {
   const flatLength = flat.length;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || confirmOpen) return;
+      if (isTypingTarget(e.target) || confirmOpen || tabWarningCount > 0) return;
       if (e.key === 'ArrowLeft') {
         setCursor((c) => Math.max(0, c - 1));
+        void autoSave.flush();
       } else if (e.key === 'ArrowRight') {
         setCursor((c) => Math.min(flatLength - 1, c + 1));
+        void autoSave.flush();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [flatLength, confirmOpen]);
+  }, [flatLength, confirmOpen, tabWarningCount, autoSave]);
 
   if (loading) return <div className="center">Loading your exam…</div>;
   if (error && !paper) return <div className="center error">{error}</div>;
@@ -228,7 +213,10 @@ export default function Exam() {
             <button
               className="btn"
               disabled={cursor === 0}
-              onClick={() => setCursor((c) => Math.max(0, c - 1))}
+              onClick={() => {
+                setCursor((c) => Math.max(0, c - 1));
+                void autoSave.flush();
+              }}
             >
               <ChevronLeft size={15} /> Previous
             </button>
@@ -240,7 +228,10 @@ export default function Exam() {
               <button
                 className="btn"
                 disabled={cursor === flat.length - 1}
-                onClick={() => setCursor((c) => Math.min(flat.length - 1, c + 1))}
+                onClick={() => {
+                  setCursor((c) => Math.min(flat.length - 1, c + 1));
+                  void autoSave.flush();
+                }}
               >
                 Next <ChevronRight size={15} />
               </button>
@@ -332,267 +323,33 @@ export default function Exam() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-function SaveIndicator({
-  status,
-  lastSavedAt,
-}: {
-  status: string;
-  lastSavedAt: Date | null;
-}) {
-  const label =
-    status === 'saving'
-      ? 'Saving…'
-      : status === 'pending'
-        ? 'Unsaved changes'
-        : status === 'offline'
-          ? 'Reconnecting…'
-          : lastSavedAt
-            ? `Saved ${lastSavedAt.toLocaleTimeString()}`
-            : 'All answers saved';
-  const icon =
-    status === 'saving' ? (
-      <Loader2 size={14} className="spinner" />
-    ) : status === 'pending' ? (
-      <AlertCircle size={14} />
-    ) : status === 'offline' ? (
-      <WifiOff size={14} />
-    ) : (
-      <CheckCircle2 size={14} />
-    );
-  return (
-    <span className={`save-indicator ${status}`}>
-      {icon}
-      {label}
-    </span>
-  );
-}
-
-function QuestionView({
-  question,
-  diGroup,
-  answer,
-  onChange,
-}: {
-  question: Question;
-  diGroup?: { title: string; passage_md: string | null; image_url: string | null };
-  answer?: AnswerSave;
-  onChange: (id: string, patch: Partial<AnswerSave>, immediate: boolean) => void;
-}) {
-  if (question.type === 'coding' && question.coding_problem) {
-    return <CodingView question={question} answer={answer} onChange={onChange} />;
-  }
-
-  return (
-    <div>
-      {diGroup && (
-        <div className="di-stimulus">
-          <h4>{diGroup.title}</h4>
-          {diGroup.image_url && (
-            <img src={diGroup.image_url} alt={diGroup.title} className="di-image" />
-          )}
-          {diGroup.passage_md && <pre className="di-passage">{diGroup.passage_md}</pre>}
+      {tabWarningCount > 0 && (
+        <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-label="Tab switch warning">
+          <div className="modal tab-warning">
+            <div className="modal-icon danger xl pulse">
+              <AlertTriangle size={30} />
+            </div>
+            <h3>Tab switch detected</h3>
+            <p>
+              You left the exam tab. This has been recorded and will be visible to the
+              proctor for review.
+              {tabWarningCount > 1 && (
+                <>
+                  {' '}
+                  <strong>This is warning #{tabWarningCount}.</strong> Repeated switching may
+                  be flagged as suspicious activity.
+                </>
+              )}
+            </p>
+            <div className="modal-actions">
+              <button className="btn danger" onClick={() => setTabWarningCount(0)}>
+                I understand, return to exam
+              </button>
+            </div>
+          </div>
         </div>
       )}
-      <p className="question-body">{question.body_md}</p>
-      <div className="options">
-        {question.options.map((option, index) => (
-          <label
-            key={option.id}
-            className={`option ${answer?.selected_option_id === option.id ? 'selected' : ''}`}
-          >
-            <input
-              type="radio"
-              name={question.id}
-              checked={answer?.selected_option_id === option.id}
-              // MCQ selections save immediately: they're discrete, cheap, and the
-              // most painful thing to lose.
-              onChange={() => onChange(question.id, { selected_option_id: option.id }, true)}
-            />
-            <span className="option-letter">{String.fromCharCode(65 + index)}</span>
-            <span>{option.body}</span>
-          </label>
-        ))}
-      </div>
-      {answer?.selected_option_id && (
-        <button
-          className="btn link"
-          onClick={() => onChange(question.id, { selected_option_id: null }, true)}
-        >
-          Clear response
-        </button>
-      )}
-    </div>
-  );
-}
-
-function CodingView({
-  question,
-  answer,
-  onChange,
-}: {
-  question: Question;
-  answer?: AnswerSave;
-  onChange: (id: string, patch: Partial<AnswerSave>, immediate: boolean) => void;
-}) {
-  const problem = question.coding_problem!;
-  const [language, setLanguage] = useState(answer?.language ?? problem.allowed_languages[0]);
-  const [run, setRun] = useState<CodeRun | null>(null);
-  const [running, setRunning] = useState(false);
-  const pollRef = useRef<number | null>(null);
-
-  const code = answer?.code_text ?? problem.starter_code[language] ?? '';
-
-  useEffect(() => () => {
-    if (pollRef.current) window.clearInterval(pollRef.current);
-  }, []);
-
-  const runCode = async () => {
-    setRunning(true);
-    setRun(null);
-    try {
-      const { run_id } = await api.runCode(question.id, language, code);
-      // Judging is queued, so poll rather than blocking a request for seconds.
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const result = await api.codeRun(run_id);
-          setRun(result);
-          if (result.status === 'done' || result.status === 'error') {
-            if (pollRef.current) window.clearInterval(pollRef.current);
-            setRunning(false);
-          }
-        } catch {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          setRunning(false);
-        }
-      }, 1200);
-    } catch (err) {
-      setRunning(false);
-      setRun({
-        run_id: '',
-        status: 'error',
-        passed: 0,
-        total: 0,
-        results: [],
-        error: err instanceof Error ? err.message : 'Run failed',
-      });
-    }
-  };
-
-  return (
-    <div className="coding">
-      <div className="coding-statement">
-        <pre>{problem.statement_md}</pre>
-        {problem.sample_test_cases.length > 0 && (
-          <div className="samples">
-            <h5>Sample cases</h5>
-            {problem.sample_test_cases.map((tc, i) => (
-              <div key={tc.id} className="sample">
-                <div>
-                  <span className="muted">Input {i + 1}</span>
-                  <pre>{tc.stdin}</pre>
-                </div>
-                <div>
-                  <span className="muted">Expected</span>
-                  <pre>{tc.expected_stdout}</pre>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="coding-editor">
-        <div className="editor-bar">
-          <select
-            value={language}
-            onChange={(e) => {
-              const next = e.target.value;
-              setLanguage(next);
-              // Only swap in the starter template if the student hasn't written anything,
-              // so changing language never destroys work.
-              const isUntouched = !answer?.code_text?.trim();
-              onChange(
-                question.id,
-                {
-                  language: next,
-                  code_text: isUntouched ? (problem.starter_code[next] ?? '') : answer?.code_text,
-                },
-                true,
-              );
-            }}
-          >
-            {problem.allowed_languages.map((lang) => (
-              <option key={lang} value={lang}>
-                {lang}
-              </option>
-            ))}
-          </select>
-          <span className="muted">
-            {problem.time_limit_ms} ms · {problem.memory_limit_mb} MB
-          </span>
-          <button className="btn" onClick={() => void runCode()} disabled={running}>
-            {running ? <Loader2 size={15} className="spinner" /> : <Play size={15} />}
-            {running ? 'Running…' : 'Run against samples'}
-          </button>
-        </div>
-
-        {/* Paste is allowed but every run and the final submission are recorded,
-            so copied code stays reviewable after the fact. */}
-        <div className="editor-frame">
-          <CodeEditor
-            language={language}
-            value={code}
-            onChange={(value) => onChange(question.id, { code_text: value, language }, false)}
-          />
-        </div>
-
-        {run && (
-          <div className="run-output">
-            {run.error ? (
-              <pre className="error">{run.error}</pre>
-            ) : (
-              <>
-                <div className={run.passed === run.total ? 'verdict pass' : 'verdict fail'}>
-                  {run.passed === run.total ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                  {run.passed} / {run.total} sample cases passed
-                </div>
-                {run.results.map((result) => (
-                  <div key={result.index} className="case">
-                    <span className={result.passed ? 'ok' : 'bad'}>
-                      Case {result.index + 1}: {result.verdict}
-                    </span>
-                    {!result.passed && (
-                      <div className="case-detail">
-                        <div>
-                          <span className="muted">Expected</span>
-                          <pre>{result.expected}</pre>
-                        </div>
-                        <div>
-                          <span className="muted">Your output</span>
-                          <pre>{result.actual || '(empty)'}</pre>
-                        </div>
-                        {result.stderr && (
-                          <div>
-                            <span className="muted">Stderr</span>
-                            <pre>{result.stderr}</pre>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-                <p className="muted small">
-                  Hidden test cases are evaluated after you submit.
-                </p>
-              </>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

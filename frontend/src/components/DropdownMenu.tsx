@@ -91,7 +91,7 @@ export default function DropdownMenu({ trigger, align = 'right', children }: Pro
       <button
         ref={triggerRef}
         type="button"
-        className="btn icon ghost"
+        className={`btn ghost${trigger ? ' trigger-custom' : ' icon'}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openMenu())}

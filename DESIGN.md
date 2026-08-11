@@ -15,7 +15,7 @@ Sizing the design starts with where the requests come from, because the naive as
 | Timer sync / heartbeat | 1 / 30 s | ~13 rps | Server is the clock authority. |
 | Question navigation | 1 / 45 s | ~9 rps | Read-only, cacheable. |
 | Code run (test-against-samples) | ~6 / exam | ~0.7 rps | Expensive; queued, not synchronous. |
-| Login burst | 400 in ~120 s | ~3–20 rps peak | Short spike at exam open. |
+| Login burst | 400 in ~120 s | ~3–20 rps peak | Short spike at exam open; can be far higher against a single IP if many students share a school/office NAT (see §6 rate limiting). |
 | Admin monitoring | — | ~1 rps | Polled dashboard. |
 
 **Total steady-state ≈ 63 rps**, above the stated 42 rps. Two design consequences:
@@ -140,7 +140,7 @@ PATCH /api/exam/answers        →  validate JWT (no DB hit — claims carry att
                                →  return 200  (p99 target < 30 ms)
 ```
 
-A Celery beat task runs every 5 seconds: pop the `dirty_attempts` set, read those hashes, and bulk-upsert into `Answer`. Worst-case data loss is one flush interval, and only if Redis dies — an acceptable trade for a 20× reduction in write load. Redis runs with AOF `everysec` persistence to bound that further.
+A Celery beat task runs every `AUTOSAVE_FLUSH_SECONDS` (15 s by default): pop the `dirty_attempts` set (capped at 500 per run), read those hashes, and bulk-upsert into `Answer` in one query. This is a single scheduled job regardless of how many of the 400 students are dirty, not a per-student request, so shortening the interval doesn't add per-user load — it only bounds the data-loss window if Redis dies uncleanly. 15 s keeps that window small while still batching client auto-saves (1/10 s debounced) and the 10 s frontend safety-flush into a couple of bulk writes per second. Redis runs with AOF `everysec` persistence to bound the Redis-loss case further.
 
 The client debounces: MCQ selections save immediately (cheap, discrete), code editor keystrokes save 10 s after the last keypress or on blur/navigation.
 
@@ -214,7 +214,8 @@ DELETE /api/admin/di-groups/{id}              remove a DI set and its questions
 POST   /api/admin/sections/{id}/coding        problem + test cases
 POST   /api/admin/students/bulk               CSV upload, generates credentials
 POST   /api/admin/exams/{id}/publish          validates then flips to published
-GET    /api/admin/exams/{id}/live             live monitor (5 s poll)
+GET    /api/admin/exams/{id}/live             live monitor snapshot (REST fallback)
+WS     /api/admin/exams/{id}/live/ws          live monitor push, Redis pub/sub fan-out across workers
 GET    /api/admin/exams/{id}/students         per-student status
 GET    /api/admin/exams/{id}/results.xlsx     streamed export
 GET    /api/admin/exams/{id}/analytics        score distribution, per-question stats
@@ -237,7 +238,7 @@ GET    /api/admin/exams/{id}/analytics        score distribution, per-question s
 | Answer tampering | Correctness never leaves the server. `is_correct` and hidden test cases are excluded from all student-facing serializers. |
 | Concurrent sessions | One active session per student ID; a second login invalidates the first and is written to `AuditLog`. |
 | Sandbox escape | No network, read-only rootfs, dropped capabilities, non-root, pids/memory/CPU caps, wall-clock kill. |
-| Rate limiting | Nginx: 10 rps/IP general. Magic-link requests are additionally capped to 1/min/student via Redis, to protect the Brevo daily send quota. |
+| Rate limiting | Nginx: 10 rps/IP general, 30 rps/IP on `/api/auth/*` (kept generous and per-IP because a school/office NAT puts many students behind one IP for login and token refresh), 5 req/min/IP on admin password login only. Magic-link requests are additionally capped to 1/min/student via Redis, to protect the Brevo daily send quota. |
 | Transport | TLS only; HSTS; `Secure`/`SameSite=Strict` refresh cookie. |
 
 **On proctoring:** tab-switch and focus-loss events are logged as advisory signals for the admin dashboard, not enforced blocks. Browser-side lockdown is trivially bypassable, and hard-failing an exam on a spurious blur event is worse than the cheating it prevents. Treat these as flags for human review.

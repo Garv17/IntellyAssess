@@ -3,6 +3,7 @@ burst of submissions queues instead of starving the host."""
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -15,11 +16,12 @@ from app.models import (
     JudgeMode,
     JudgeRun,
     JudgeStatus,
+    ProblemType,
     Question,
     Section,
     TestCase,
 )
-from app.services import sandbox
+from app.services import harness, sandbox
 from app.sync_db import session_scope
 from app.tasks.celery_app import celery_app
 
@@ -42,7 +44,18 @@ def _test_cases(session, problem_id: uuid.UUID, samples_only: bool) -> list[Test
 def _evaluate(
     problem: CodingProblem, cases: list[TestCase], language: str, code: str, reveal: bool
 ) -> tuple[int, int, float, list[dict], str | None]:
-    """Returns (passed, total, weighted_score_fraction, per_case_results, error)."""
+    """Returns (passed, total, weighted_score_fraction, per_case_results, error).
+    Dispatches on problem_type — everything past this point is identical for both
+    callers (judge_run's targeted/sample runs and grade_attempt_coding's final
+    hidden-case grading), so neither needs to know which judge mode it's using."""
+    if problem.problem_type is ProblemType.function:
+        return _evaluate_function(problem, cases, language, code, reveal)
+    return _evaluate_stdio(problem, cases, language, code, reveal)
+
+
+def _evaluate_stdio(
+    problem: CodingProblem, cases: list[TestCase], language: str, code: str, reveal: bool
+) -> tuple[int, int, float, list[dict], str | None]:
     results, compile_error = sandbox.execute(
         language=language,
         code=code,
@@ -61,6 +74,9 @@ def _evaluate(
     for index, (case, result) in enumerate(zip(cases, results, strict=False)):
         if result.verdict == "tle":
             verdict = "tle"
+            ok = False
+        elif result.verdict == "mle":
+            verdict = "mle"
             ok = False
         elif result.verdict == "runtime_error":
             verdict = "runtime_error"
@@ -90,9 +106,114 @@ def _evaluate(
     return passed, len(cases), earned / total_weight, payload, None
 
 
+def _evaluate_function(
+    problem: CodingProblem, cases: list[TestCase], language: str, code: str, reveal: bool
+) -> tuple[int, int, float, list[dict], str | None]:
+    """Same shape/contract as _evaluate_stdio, but the "program" is the student's
+    function wrapped in a generated driver, "stdin" is a JSON param blob, and
+    grading is JSON-decode-and-deep-equal instead of a string compare."""
+    program = harness.build_program(
+        language, problem.function_name, problem.return_type, problem.parameters, code
+    )
+    results, compile_error = sandbox.execute(
+        language=language,
+        code=program,
+        stdin_batch=[harness.encode_stdin(c.param_values or []) for c in cases],
+        time_limit_ms=problem.time_limit_ms,
+        memory_limit_mb=problem.memory_limit_mb,
+    )
+    if compile_error:
+        return 0, len(cases), 0.0, [], compile_error
+
+    passed = 0
+    earned = 0
+    total_weight = sum(c.weight for c in cases) or 1
+    payload: list[dict] = []
+
+    for index, (case, result) in enumerate(zip(cases, results, strict=False)):
+        if result.verdict in ("tle", "mle", "runtime_error"):
+            verdict = result.verdict
+            ok = False
+        else:
+            matches, parse_error = harness.compare(problem.return_type, result.stdout, case.expected_value)
+            if parse_error:
+                verdict = "runtime_error"
+                ok = False
+            else:
+                ok = matches
+                verdict = "accepted" if ok else "wrong_answer"
+
+        if ok:
+            passed += 1
+            earned += case.weight
+
+        payload.append(
+            {
+                "index": index,
+                "passed": ok,
+                # Structured values are JSON-stringified so this payload keeps the
+                # same str|None shape TestCaseResult already expects; the frontend
+                # JSON.parses them back for display when it knows the problem is
+                # function-mode.
+                "stdin": json.dumps(case.param_values) if reveal else None,
+                "expected": json.dumps(case.expected_value) if reveal else None,
+                "actual": result.stdout if reveal else None,
+                "stderr": result.stderr if reveal else None,
+                "time_ms": result.time_ms,
+                "verdict": verdict,
+            }
+        )
+
+    return passed, len(cases), earned / total_weight, payload, None
+
+
+def _run_custom(run: JudgeRun, problem: CodingProblem) -> dict:
+    """Ad-hoc run against student-typed input. There's no expected output, so this
+    never grades anything — just executes and reports what happened."""
+    if problem.problem_type is ProblemType.function:
+        program = harness.build_program(
+            run.language, problem.function_name, problem.return_type, problem.parameters, run.code_text
+        )
+        stdin = harness.encode_stdin(run.custom_params or [])
+    else:
+        program = run.code_text
+        stdin = run.custom_stdin or ""
+
+    results, compile_error = sandbox.execute(
+        language=run.language,
+        code=program,
+        stdin_batch=[stdin],
+        time_limit_ms=problem.time_limit_ms,
+        memory_limit_mb=problem.memory_limit_mb,
+    )
+    run.passed, run.total = 0, 0
+    if compile_error:
+        run.results = []
+        run.status = JudgeStatus.error
+        run.error = compile_error
+        return {"run_id": str(run.id), "passed": 0, "total": 0, "error": compile_error}
+
+    result = results[0]
+    run.results = [
+        {
+            "index": 0,
+            "passed": False,  # no expected output to grade against
+            "stdin": json.dumps(run.custom_params) if problem.problem_type is ProblemType.function else run.custom_stdin,
+            "expected": None,
+            "actual": result.stdout,
+            "stderr": result.stderr,
+            "time_ms": result.time_ms,
+            "verdict": result.verdict,
+        }
+    ]
+    run.status = JudgeStatus.done
+    return {"run_id": str(run.id), "passed": 0, "total": 0, "error": None}
+
+
 @celery_app.task(name="judge.run", bind=True, max_retries=1)
 def judge_run(self, run_id: str) -> dict:
-    """Student-triggered run against sample test cases only."""
+    """Student-triggered run: one selected sample case, ad-hoc custom input, or
+    (when neither is specified) every sample case."""
     with session_scope() as session:
         run = session.get(JudgeRun, uuid.UUID(run_id))
         if run is None:
@@ -106,7 +227,12 @@ def judge_run(self, run_id: str) -> dict:
             run.error = "Coding problem not found"
             return {"error": run.error}
 
+        if run.mode is JudgeMode.custom:
+            return _run_custom(run, problem)
+
         cases = _test_cases(session, problem.id, samples_only=run.mode is JudgeMode.sample)
+        if run.test_case_id is not None:
+            cases = [c for c in cases if c.id == run.test_case_id]
         if not cases:
             run.status = JudgeStatus.error
             run.error = "No test cases available"

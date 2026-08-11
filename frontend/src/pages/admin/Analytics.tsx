@@ -114,7 +114,7 @@ export default function Analytics() {
               </div>
               <p className="muted small">
                 Low accuracy on a question with high attempts usually means the question is
-                flawed, not that the cohort is weak — worth reviewing before results go out.
+                flawed, not that the cohort is weak. Worth reviewing before results go out.
               </p>
               <div className="table-wrap">
                 <table className="table">

@@ -36,7 +36,7 @@ export default function AppShell({ title, actions, adminName, children }: Props)
             <span className="brand-mark">
               <FileBarChart2 size={16} />
             </span>
-            ExamOps
+            IntellyAssess
           </span>
         </div>
         <nav className="app-nav">

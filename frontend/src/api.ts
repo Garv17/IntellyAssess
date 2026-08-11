@@ -152,10 +152,22 @@ export const api = {
     request<SaveAck>('/api/exam/answers', { method: 'PATCH', body: { answers } }),
   heartbeat: (focusLost = false) =>
     request<Heartbeat>(`/api/exam/heartbeat?focus_lost=${focusLost}`, { method: 'POST' }),
-  runCode: (question_id: string, language: string, code_text: string) =>
+  runCode: (
+    question_id: string,
+    language: string,
+    code_text: string,
+    target: { testCaseId?: string; customStdin?: string; customParams?: unknown[] } = {},
+  ) =>
     request<{ run_id: string }>('/api/exam/code/run', {
       method: 'POST',
-      body: { question_id, language, code_text },
+      body: {
+        question_id,
+        language,
+        code_text,
+        test_case_id: target.testCaseId,
+        custom_stdin: target.customStdin,
+        custom_params: target.customParams,
+      },
     }),
   codeRun: (runId: string) => request<CodeRun>(`/api/exam/code/run/${runId}`),
   submit: (auto = false) =>
@@ -190,6 +202,21 @@ export const api = {
     request<QuestionDetail>(`/api/admin/questions/${questionId}/coding`, {
       method: 'PATCH',
       body: payload,
+    }),
+  previewBoilerplate: (
+    language: string,
+    functionName: string,
+    returnType: string,
+    parameters: { name: string; type: string }[],
+  ) =>
+    request<{ code: string }>('/api/admin/coding/preview-boilerplate', {
+      method: 'POST',
+      body: { language, function_name: functionName, return_type: returnType, parameters },
+    }),
+  previewSql: (setupSql: string, querySql: string) =>
+    request<{ stdout: string; error: string | null }>('/api/admin/sql/preview', {
+      method: 'POST',
+      body: { setup_sql: setupSql, query_sql: querySql },
     }),
   updateDiGroup: (groupId: string, payload: unknown) =>
     request<DIGroupDetail>(`/api/admin/di-groups/${groupId}`, { method: 'PATCH', body: payload }),
@@ -366,18 +393,30 @@ export interface Option {
   id: string;
   body: string;
 }
+export interface ParamDef {
+  name: string;
+  type: string;
+}
 export interface TestCase {
   id: string;
   stdin: string;
   expected_stdout: string;
+  param_values: unknown[] | null;
+  expected_value: unknown;
+  explanation: string | null;
 }
 export interface CodingProblem {
   id: string;
   statement_md: string;
+  constraints_md: string | null;
   allowed_languages: string[];
   time_limit_ms: number;
   memory_limit_mb: number;
   starter_code: Record<string, string>;
+  problem_type: 'stdio' | 'function';
+  function_name: string | null;
+  return_type: string | null;
+  parameters: ParamDef[] | null;
   sample_test_cases: TestCase[];
 }
 export interface DIGroup {
@@ -430,6 +469,9 @@ export interface TestCaseAdmin {
   id: string;
   stdin: string;
   expected_stdout: string;
+  param_values: unknown[] | null;
+  expected_value: unknown;
+  explanation: string | null;
   is_sample: boolean;
   weight: number;
   order_index: number;
@@ -437,10 +479,15 @@ export interface TestCaseAdmin {
 export interface CodingProblemAdmin {
   id: string;
   statement_md: string;
+  constraints_md: string | null;
   allowed_languages: string[];
   time_limit_ms: number;
   memory_limit_mb: number;
   starter_code: Record<string, string>;
+  problem_type: 'stdio' | 'function';
+  function_name: string | null;
+  return_type: string | null;
+  parameters: ParamDef[] | null;
   test_cases: TestCaseAdmin[];
 }
 export type Difficulty = 'easy' | 'medium' | 'hard';
