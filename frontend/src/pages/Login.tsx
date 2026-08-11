@@ -88,7 +88,7 @@ function StudentLoginForm() {
       <h1 style={{ textAlign: 'center' }}>Examination portal</h1>
       <p className="muted" style={{ textAlign: 'center' }}>
         Open the sign-in link sent to your registered email to start your exam. Links are issued
-        by your administrator — if you haven't received one, please contact them.
+        by your administrator. If you haven't received one, please contact them.
       </p>
     </div>
   );

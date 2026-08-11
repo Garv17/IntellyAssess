@@ -8,7 +8,7 @@ x-backend-env: &backend-env
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
   UPLOAD_DIR: /app/uploads
-  CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+  CORS_ORIGINS: '["http://localhost:5180","http://localhost:8080"]'
 
 services:
   postgres:
@@ -75,6 +75,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Overrides the backend image's baked-in HEALTHCHECK (curls localhost:8000,
+    # which is only ever listening in the api container) — this one actually
+    # pings the worker running in this container.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
 
   # Judge runs on its own queue with bounded concurrency and needs the Docker socket
   # to spawn sandbox containers. Give this service its own host in production.
@@ -91,6 +100,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # See the worker service above: this overrides the inherited api healthcheck
+    # with one that actually pings the judge worker in this container.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
 
   beat:
     build: ./backend
@@ -102,11 +119,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # celery beat has no "inspect ping" equivalent (it schedules, it doesn't answer
+    # broker pings) — disable the inherited api healthcheck rather than report a
+    # false "unhealthy" against an endpoint that was never going to exist here.
+    # Beat's liveness is what SETUP.md's "docker compose logs beat" check verifies.
+    healthcheck:
+      disable: true
 
   frontend:
     build: ./frontend
     ports:
-      - "5173:80"
+      - "5180:80"
     depends_on:
       - api
 

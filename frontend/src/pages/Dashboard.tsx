@@ -70,7 +70,7 @@ export default function Dashboard() {
           <span className="brand-mark">
             <FileBarChart2 size={16} />
           </span>
-          Examination Portal
+          IntellyAssess
         </span>
         <div className="top-bar-right">
           {me && (
@@ -100,7 +100,7 @@ export default function Dashboard() {
             <EmptyState
               icon={<CalendarClock size={24} />}
               title="No exams open right now"
-              description="Check back at your scheduled time — this page updates automatically once an exam window opens."
+              description="Check back at your scheduled time. This page updates automatically once an exam window opens."
             />
           </div>
         ) : (
@@ -142,7 +142,7 @@ export default function Dashboard() {
                         <li>
                           {exam.requires_seb
                             ? 'This exam must be taken inside Safe Exam Browser.'
-                            : 'One attempt only — the timer starts as soon as you begin.'}
+                            : 'One attempt only. The timer starts as soon as you begin.'}
                         </li>
                         <li>Answers save automatically; refreshing is safe.</li>
                         <li>The exam submits itself when the timer reaches zero.</li>

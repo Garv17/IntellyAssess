@@ -25,6 +25,7 @@ DIRTY = "dirty_attempts"  # set of attempt_ids awaiting flush
 DENYLIST = "jti:denied:{jti}"  # string: "1"
 SESSION = "student:{student_id}:session"  # string: active jti (single-session)
 MAGIC_COOLDOWN = "magic:cooldown:{student_id}"  # string: "1"
+LIVE_CHANNEL = "live:{exam_id}"  # pub/sub: marker only, no payload
 
 
 def redis() -> aioredis.Redis:
@@ -159,6 +160,18 @@ async def start_magic_cooldown(student_pk: str, ttl_seconds: int) -> bool:
     except Exception as exc:  # pragma: no cover
         log.warning("redis start_magic_cooldown failed: %s", exc)
         return True
+
+
+# ---------------------------------------------------------- live monitor pub/sub
+
+
+async def publish_live_update(exam_id: str) -> None:
+    """Marker-only publish — whichever worker process holds the connected sockets
+    recomputes and pushes the snapshot itself (see app/pubsub.py)."""
+    try:
+        await redis().publish(LIVE_CHANNEL.format(exam_id=exam_id), "changed")
+    except Exception as exc:  # pragma: no cover - degraded path
+        log.warning("redis publish_live_update failed: %s", exc)
 
 
 def seconds_until(deadline: datetime) -> int:

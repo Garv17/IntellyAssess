@@ -22,14 +22,16 @@ docker compose exec api python -m scripts.seed --students 25
 
 | Service | URL |
 |---|---|
-| Student portal | http://localhost:5173 |
-| Admin console | http://localhost:5173/admin/login |
+| Student portal | http://localhost:5180 |
+| Admin console | http://localhost:5180/admin/login |
 | API docs | http://localhost:8000/docs |
 
 Demo credentials (created by the seed script):
 
-- **Student** — `STU0001` / `Student@123`
-- **Admin** — `admin@example.com` / `Admin@123`
+- **Admin**: `admin@example.com` / `Admin@123`
+- **Student**: no password. Students sign in via a magic link emailed to their
+  registered address (`STU0001` is `stu0001@example.com`). In development, no real
+  mailbox is needed; see [SETUP.md](SETUP.md) step 7 for how to redeem a link locally.
 
 ## Local development
 
@@ -74,8 +76,10 @@ alembic upgrade head
 Three decisions carry the load; the rest is ordinary CRUD.
 
 **1. Auto-save never touches Postgres directly.** Answers land in a Redis hash and the
-attempt is added to a dirty set; a Celery beat task bulk-upserts every 5 seconds. This
-turns ~40 write-rps into ~2 bulk writes/second. If Redis is unavailable the API falls
+attempt is added to a dirty set; a Celery beat task bulk-upserts every `AUTOSAVE_FLUSH_SECONDS`
+(15 s by default, capped at 500 attempts per run — one batched job, not one request per
+student, so lowering it doesn't add per-user load). This
+turns ~40 write-rps into a couple of bulk writes/second. If Redis is unavailable the API falls
 back to a direct upsert — slower, still correct.
 
 **2. The server owns the clock.** `deadline_at` is fixed at attempt start. The browser
@@ -115,10 +119,17 @@ backend/
       answers.py       idempotent bulk upsert
       grading.py       MCQ/DI scoring with negative marking
       sandbox.py       Docker sandbox
+      harness.py       function-mode driver generation (param encode/decode)
+      harness_langs/   per-language boilerplate for function-mode problems
+      monitor.py       live-monitor snapshot, shared by the poll and WebSocket paths
+      email.py         Brevo transactional email (magic links)
       export.py        XLSX results
     tasks/
       maintenance.py   answer flush + auto-submit sweeper
       judge_tasks.py   sample runs and final grading
+      mailer_tasks.py  bulk magic-link sends
+    ws_manager.py      per-worker WebSocket registry for Live Monitor
+    pubsub.py          Redis pub/sub fan-out across uvicorn workers
   scripts/
     seed.py            schema + demo exam + students
     loadtest.py        simulates N concurrent students
@@ -127,11 +138,12 @@ frontend/
     api.ts             typed client, transparent token refresh
     monaco.ts          local Monaco registration (no CDN — see below)
     hooks/
-      useAutoSave.ts   batching debounced save with retry
-      useExamTimer.ts  server-corrected countdown
+      useAutoSave.ts          batching debounced save with retry
+      useExamTimer.ts         server-corrected countdown
+      useLiveMonitorSocket.ts WebSocket client for the admin live monitor
     components/
       CodeEditor.tsx   lazy-loaded editor, keeps Monaco out of the initial bundle
-    pages/             Login, Dashboard, Exam, Submitted, admin/*
+    pages/             Login, MagicLinkCallback, Dashboard, Exam, Submitted, admin/*
 ```
 
 The code editor is bundled and served from the same origin rather than fetched from a
@@ -158,20 +170,20 @@ editor chunk is only downloaded when a candidate opens a coding question.
 6. **Publish** — validated, not a flag flip. Blocks on missing questions, MCQs without
    exactly one correct option, coding problems without both sample and hidden cases, DI
    groups with a missing image, and a window shorter than the duration.
-7. **Monitor** — live counts and per-student rows, refreshed every 5 s. Force-submit and
-   time-extension are available per attempt and both are audit-logged.
+7. **Monitor** — live counts and per-student rows, pushed over WebSocket the moment
+   something changes, with a 5 s poll as a fallback if the socket drops. Force-submit
+   and time-extension are available per attempt and both are audit-logged.
 8. **Export / analytics** — XLSX results, score distribution, per-question accuracy.
 
 ### CSV formats
 
-**Students** — `enrollment_id, name, email, cohort, dob, password` (`student_id` still accepted
-as an alias for `enrollment_id`, for older CSVs). Password precedence per row: explicit
-`password`, else `firstname` + `dob` as `DDMMYYYY` (e.g. `Asha15082003`), else a random
-generated password.
+**Students** — `enrollment_id, name, email, cohort` (`student_id` still accepted as an
+alias for `enrollment_id`, for older CSVs; `cohort` is optional). There is no password
+column: `email` is the magic-link sign-in identity, so it's required and must be unique.
 ```csv
-enrollment_id,name,email,cohort,dob,password
-STU1001,Asha Rao,asha@example.com,2026,15-08-2003,
-STU1002,Vikram Shah,vikram@example.com,2026,,Temp@1234
+enrollment_id,name,email,cohort
+STU1001,Asha Rao,asha@example.com,2026
+STU1002,Vikram Shah,vikram@example.com,2026
 ```
 
 **MCQ bulk** — `body_md, option_a, option_b, option_c, option_d, correct, marks, negative_marks`
@@ -201,12 +213,15 @@ lag** (`dirty_attempts` set size). Watch those, not CPU.
 ## Pre-exam checklist
 
 - [ ] `JWT_SECRET` set to a real random value, not the default
+- [ ] `BREVO_API_KEY` and `BREVO_SENDER_EMAIL` set and the sender verified in Brevo,
+      `ENVIRONMENT=production` set — without a working key, no student can sign in
 - [ ] Load test passed at 1.5× expected concurrency
 - [ ] Redis AOF persistence on (`appendfsync everysec`)
 - [ ] Auto-submit sweeper verified against a seeded overdue attempt
-- [ ] Judge images pre-pulled on the judge host (first pull is slow)
+- [ ] Judge images pre-pulled on the judge host for every language the exam uses
+      (first pull is slow)
 - [ ] Postgres snapshot taken immediately before the window opens
-- [ ] Beat worker running — without it, answers never flush and nothing auto-submits
+- [ ] Beat worker running. Without it, answers never flush and nothing auto-submits
 
 ---
 
@@ -215,7 +230,8 @@ lag** (`dirty_attempts` set size). Watch those, not CPU.
 - **Proctoring is advisory.** Tab-switch and focus-loss events are logged for human
   review, not enforced. Browser lockdown is trivially bypassable, and hard-failing an
   exam on a spurious blur event is worse than the cheating it prevents.
-- **Worst-case answer loss is one flush interval (~5 s)**, and only if Redis dies
+- **Worst-case answer loss is one flush interval (~120 s by default, `AUTOSAVE_FLUSH_SECONDS`)**,
+  and only if Redis dies
   outright. AOF persistence bounds this further.
 - **The judge trusts Docker as the isolation boundary.** For untrusted code at higher
   stakes, run judge workers on a dedicated host with gVisor or Firecracker.

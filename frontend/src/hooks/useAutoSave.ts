@@ -85,6 +85,14 @@ export function useAutoSave({ debounceMs = 1200, onExpired }: Options = {}) {
     };
   }, [flush]);
 
+  // A save that failed while offline sits in `pending` until the next tick; don't
+  // wait for the safety interval once the network is back.
+  useEffect(() => {
+    const onOnline = () => void flush();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [flush]);
+
   return { queue, flush, status, lastSavedAt, pendingCount: () => pending.current.size };
 }
 

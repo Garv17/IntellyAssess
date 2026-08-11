@@ -67,15 +67,23 @@ class TestCaseOut(ORMModel):
     id: uuid.UUID
     stdin: str
     expected_stdout: str
+    param_values: list[Any] | None = None
+    expected_value: Any | None = None
+    explanation: str | None = None
 
 
 class CodingProblemOut(ORMModel):
     id: uuid.UUID
     statement_md: str
+    constraints_md: str | None = None
     allowed_languages: list[str]
     time_limit_ms: int
     memory_limit_mb: int
     starter_code: dict[str, str]
+    problem_type: Literal["stdio", "function"] = "stdio"
+    function_name: str | None = None
+    return_type: str | None = None
+    parameters: list[dict[str, str]] | None = None
     sample_test_cases: list[TestCaseOut] = []
 
 
@@ -189,6 +197,14 @@ class CodeRunRequest(BaseModel):
     question_id: uuid.UUID
     language: str = Field(max_length=32)
     code_text: str = Field(max_length=65536)
+    # Run against exactly one sample case (must have is_sample=True on this problem)...
+    test_case_id: uuid.UUID | None = None
+    # ...or ad-hoc input with no expected output to grade against. At most one of
+    # these two should be set; if neither is set, every sample case runs (legacy
+    # "run all samples" behavior).
+    custom_stdin: str | None = Field(default=None, max_length=8192)
+    # Function-mode equivalent of custom_stdin — ordered parameter values.
+    custom_params: list[Any] | None = None
 
 
 class CodeRunAccepted(BaseModel):
@@ -306,10 +322,49 @@ class DIGroupCreate(BaseModel):
 # knows how to compile/run each one.
 CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "sql"]
 
+# Must match app.services.harness.PARAM_TYPES — that's what actually knows how to
+# decode/encode each one, per language.
+ParamType = Literal[
+    "int", "float", "bool", "string", "char",
+    "int[]", "float[]", "bool[]", "string[]", "int[][]",
+]
+
+
+class ParamDef(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    type: ParamType
+
+
+class BoilerplatePreviewRequest(BaseModel):
+    language: str
+    function_name: str = Field(min_length=1, max_length=128)
+    return_type: ParamType
+    parameters: list[ParamDef] = Field(min_length=1)
+
+
+class BoilerplatePreviewOut(BaseModel):
+    code: str
+
+
+class SqlPreviewRequest(BaseModel):
+    # Schema/seed SQL for one test case — same text an admin would put in that
+    # case's `stdin`. Optional: a query with no setup (e.g. `SELECT 1;`) is valid.
+    setup_sql: str = ""
+    query_sql: str = Field(min_length=1)
+
+
+class SqlPreviewOut(BaseModel):
+    stdout: str
+    error: str | None = None
+
 
 class TestCaseCreate(BaseModel):
     stdin: str = ""
     expected_stdout: str = ""
+    # Function-mode equivalents of stdin/expected_stdout above.
+    param_values: list[Any] | None = None
+    expected_value: Any | None = None
+    explanation: str | None = None
     is_sample: bool = False
     weight: int = Field(default=1, ge=1)
     order_index: int = 0
@@ -318,12 +373,19 @@ class TestCaseCreate(BaseModel):
 class CodingCreate(BaseModel):
     body_md: str = Field(min_length=1)
     statement_md: str = Field(min_length=1)
+    constraints_md: str | None = None
     marks: float | None = None
     order_index: int = 0
     allowed_languages: list[CodingLanguage] = ["python"]
     time_limit_ms: int = Field(default=2000, ge=100, le=15000)
     memory_limit_mb: int = Field(default=256, ge=16, le=512)
+    # Ignored server-side for problem_type="function" — starter_code is always
+    # derived from function_name/return_type/parameters in that case.
     starter_code: dict[str, str] = {}
+    problem_type: Literal["stdio", "function"] = "stdio"
+    function_name: str | None = Field(default=None, max_length=128)
+    return_type: ParamType | None = None
+    parameters: list[ParamDef] | None = None
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
     difficulty: Literal["easy", "medium", "hard"] | None = None
@@ -358,6 +420,9 @@ class TestCaseAdminOut(ORMModel):
     id: uuid.UUID
     stdin: str
     expected_stdout: str
+    param_values: list[Any] | None = None
+    expected_value: Any | None = None
+    explanation: str | None = None
     is_sample: bool
     weight: int
     order_index: int
@@ -366,10 +431,15 @@ class TestCaseAdminOut(ORMModel):
 class CodingProblemAdminOut(ORMModel):
     id: uuid.UUID
     statement_md: str
+    constraints_md: str | None = None
     allowed_languages: list[str]
     time_limit_ms: int
     memory_limit_mb: int
     starter_code: dict[str, str]
+    problem_type: Literal["stdio", "function"] = "stdio"
+    function_name: str | None = None
+    return_type: str | None = None
+    parameters: list[dict[str, str]] | None = None
     test_cases: list[TestCaseAdminOut] = []
 
 
@@ -418,11 +488,16 @@ class DIGroupUpdate(BaseModel):
 class CodingUpdate(BaseModel):
     body_md: str = Field(min_length=1)
     statement_md: str = Field(min_length=1)
+    constraints_md: str | None = None
     marks: float | None = None
     allowed_languages: list[CodingLanguage] = ["python"]
     time_limit_ms: int = Field(default=2000, ge=100, le=15000)
     memory_limit_mb: int = Field(default=256, ge=16, le=512)
     starter_code: dict[str, str] = {}
+    problem_type: Literal["stdio", "function"] = "stdio"
+    function_name: str | None = Field(default=None, max_length=128)
+    return_type: ParamType | None = None
+    parameters: list[ParamDef] | None = None
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
     difficulty: Literal["easy", "medium", "hard"] | None = None

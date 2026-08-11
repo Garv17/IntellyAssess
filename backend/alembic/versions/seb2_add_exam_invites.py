@@ -1,10 +1,10 @@
 """add exam_invites table
 
-Revision ID: 0002
-Revises: 0001
+Revision ID: seb2
+Revises: seb1
 Create Date: 2026-08-11
 
-Backs the PIN-based multi-student SEB login flow (SEB_INTEGRATION.md §6): one row
+Backs the PIN-based multi-student SEB login flow (SEB_INTEGRATION.md §5): one row
 per (exam, student), token stored only as a hash, PIN likewise.
 """
 
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0002"
-down_revision: str | Sequence[str] | None = "0001"
+revision: str = "seb2"
+down_revision: str | Sequence[str] | None = "seb1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -35,6 +35,7 @@ from app.models import (
     QuestionType,
     Section,
     Student,
+    TestCase,
 )
 from app.schemas import (
     AnswerBatchSave,
@@ -182,6 +183,7 @@ async def start_exam(
 
     deadline = _aware(attempt.deadline_at)
     await cache.set_deadline(str(attempt.id), deadline, cache.seconds_until(deadline) + 300)
+    await cache.publish_live_update(str(exam_id))
 
     # Re-issue an attempt-bound token so subsequent saves skip the attempt lookup.
     token, _ = create_access_token(str(student.id), "student", attempt_id=str(attempt.id))
@@ -283,6 +285,8 @@ async def heartbeat(
     deadline = await resolve_deadline(attempt)
     if focus_lost:
         attempt.focus_loss_count += 1
+        await db.flush()
+        await cache.publish_live_update(str(attempt.exam_id))
     return HeartbeatOut(
         seconds_remaining=cache.seconds_until(deadline),
         status=attempt.status,
@@ -316,12 +320,31 @@ async def run_code(
             f"Language not allowed. Choose from: {', '.join(problem.allowed_languages)}",
         )
 
+    # A run targets exactly one thing: a specific sample case, or ad-hoc custom
+    # input/params. Neither given falls back to the legacy "run every sample"
+    # behavior. Whether "custom" means custom_stdin or custom_params is decided by
+    # the judge worker from problem.problem_type — this endpoint doesn't need to
+    # know which judge mode a problem uses.
+    mode = JudgeMode.sample
+    test_case_id: uuid.UUID | None = None
+    if payload.custom_stdin is not None or payload.custom_params is not None:
+        mode = JudgeMode.custom
+    elif payload.test_case_id is not None:
+        case = await db.get(TestCase, payload.test_case_id)
+        if case is None or case.coding_problem_id != problem.id or not case.is_sample:
+            # A hidden case's id must never be runnable through this endpoint.
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Test case not found")
+        test_case_id = case.id
+
     run = JudgeRun(
         attempt_id=attempt.id,
         question_id=payload.question_id,
         language=payload.language,
         code_text=payload.code_text,
-        mode=JudgeMode.sample,
+        mode=mode,
+        test_case_id=test_case_id,
+        custom_stdin=payload.custom_stdin,
+        custom_params=payload.custom_params,
         status=JudgeStatus.queued,
     )
     db.add(run)
@@ -405,6 +428,7 @@ async def submit_exam(
         )
     )
     await cache.clear_attempt(str(attempt.id))
+    await cache.publish_live_update(str(attempt.exam_id))
 
     if coding_pending:
         # Same reasoning as run_code: commit first so the judge worker's own

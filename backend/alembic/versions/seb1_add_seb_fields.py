@@ -1,16 +1,13 @@
 """add seb config to exams and seb_verified to exam_attempts
 
-Revision ID: 0001
-Revises:
+Revision ID: seb1
+Revises: 05ad3e828f25
 Create Date: 2026-08-10
 
-This is the first migration in this repo. It assumes the schema already exists
-(created via scripts.seed's create_all, per README's dev workflow) and only adds the
-three SEB-related columns — it is not a full baseline. If you're pointing this at a
-brand-new, empty database, running `python -m scripts.seed` will create every table
-including these columns directly from the models, and this migration becomes a no-op
-(the ALTERs below are idempotent via IF NOT EXISTS-style checks left to the operator —
-review before running against a real database, as noted in SEB_INTEGRATION.md).
+Rebased onto the feature/magic-link baseline (0001 -> 9adcd82108f8 ->
+05ad3e828f25) after merging that branch in — this can no longer claim to be
+the repo's first migration, and "0001" collided with that branch's own
+baseline revision id.
 """
 
 from __future__ import annotations
@@ -20,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0001"
-down_revision: str | Sequence[str] | None = None
+revision: str = "seb1"
+down_revision: str | Sequence[str] | None = "05ad3e828f25"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

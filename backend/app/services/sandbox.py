@@ -84,7 +84,7 @@ class RunResult:
     exit_code: int
     time_ms: int
     timed_out: bool
-    verdict: str  # accepted | wrong_answer | tle | runtime_error | compile_error | internal_error
+    verdict: str  # ok | tle | mle | runtime_error (compile_error/internal_error are reported separately, see execute())
 
 
 MAX_OUTPUT_CHARS = 10_000
@@ -219,9 +219,21 @@ def execute(
             stdout = _truncate((stdout_b or b"").decode(errors="replace"))
             stderr = _truncate((stderr_b or b"").decode(errors="replace"))
 
-            # `timeout -s KILL` reports 137; treat it as TLE rather than a crash.
-            timed_out = exit_code == 137 or elapsed_ms > time_limit_ms * 2
-            verdict = "tle" if timed_out else ("runtime_error" if exit_code != 0 else "ok")
+            # `timeout -s KILL` and the kernel OOM-killer both terminate with SIGKILL
+            # (exit 137), so exit code alone can't tell TLE apart from MLE. `timeout`
+            # only fires once the full wall-clock budget has elapsed; an OOM kill lands
+            # as soon as the process outgrows mem_limit, almost always well before that.
+            # The 0.9x margin is a heuristic, not a guarantee — it's intentionally
+            # conservative so a merely-slow-but-legitimate run doesn't get misread as MLE.
+            if exit_code == 137 and elapsed_ms < wall_limit * 1000 * 0.9:
+                verdict = "mle"
+            elif exit_code == 137 or elapsed_ms > time_limit_ms * 2:
+                verdict = "tle"
+            elif exit_code != 0:
+                verdict = "runtime_error"
+            else:
+                verdict = "ok"
+            timed_out = verdict in ("tle", "mle")
 
             results.append(
                 RunResult(

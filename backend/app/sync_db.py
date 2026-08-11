@@ -22,6 +22,15 @@ SyncSession = sessionmaker(bind=sync_engine, expire_on_commit=False)
 sync_redis = redis.from_url(settings.redis_url, decode_responses=True)
 
 
+def publish_live_update_sync(exam_id: str) -> None:
+    """Sync counterpart to app.cache.publish_live_update, for Celery call sites
+    (maintenance.py) which have no event loop. Same channel, same Redis instance."""
+    try:
+        sync_redis.publish(f"live:{exam_id}", "changed")
+    except Exception:
+        pass
+
+
 @contextmanager
 def session_scope() -> Session:
     session = SyncSession()

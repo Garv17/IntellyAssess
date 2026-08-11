@@ -34,16 +34,9 @@ export default function Submitted() {
         <div className="tick">
           <CheckCircle2 size={26} />
         </div>
-        <h1>Exam submitted</h1>
-        <p className="muted">
-          Your responses have been recorded. You may close this window.
-        </p>
-        {receipt && (
-          <p className="muted small">
-            Receipt <code>{receipt.receipt_code}</code> · {receipt.answered_count}/
-            {receipt.total_questions} answered
-          </p>
-        )}
+        <h1>Submitted!</h1>
+        <p className="muted">You made it to the finish line. Nicely done.</p>
+        <p className="muted">Go take a well-earned break.</p>
 
         <button className="btn full" onClick={signOut}>
           Sign out

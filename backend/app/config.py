@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "Exam Platform"
+    app_name: str = "IntellyAssess"
     environment: str = "development"
     debug: bool = True
 
@@ -29,15 +29,19 @@ class Settings(BaseSettings):
     # Magic-link email (Brevo transactional API)
     brevo_api_key: str = ""
     brevo_sender_email: str = "no-reply@example.com"
-    brevo_sender_name: str = "IntelliAssess"
-    frontend_base_url: str = "http://localhost:5173"
+    brevo_sender_name: str = "IntellyAssess"
+    frontend_base_url: str = "http://localhost:5180"
     magic_link_ttl_minutes: int = 15
     # Minimum gap between two link requests for the same student — protects the
     # Brevo daily send quota from a student mashing "resend".
     magic_link_cooldown_seconds: int = 60
 
     # Exam behaviour
-    autosave_flush_seconds: int = 5
+    # This is a single batched Celery-beat job (up to 500 dirty attempts per run),
+    # not a per-student request, so lowering it doesn't add per-user server load —
+    # it only bounds how much buffered Redis data could be lost if Redis crashes
+    # uncleanly. 15s keeps that exposure small without adding meaningful DB writes.
+    autosave_flush_seconds: int = 15
     autosubmit_sweep_seconds: int = 30
     heartbeat_seconds: int = 30
     # Grace period for in-flight requests that started just before the deadline.
@@ -55,7 +59,7 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     max_upload_mb: int = 10
 
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:5180"]
 
 
 WEAK_SECRET_DEFAULT = "change-me-in-production"

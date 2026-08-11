@@ -48,6 +48,8 @@ export default function AdminHome() {
     duration_minutes: 60,
     cohort: '',
     pass_percentage: '',
+    randomize_questions: true,
+    randomize_options: true,
   });
   const [bulk, setBulk] = useState<BulkResult | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -64,6 +66,8 @@ export default function AdminHome() {
     duration_minutes: 60,
     cohort: '',
     pass_percentage: '',
+    randomize_questions: true,
+    randomize_options: true,
   });
   const [deletingExam, setDeletingExam] = useState<Exam | null>(null);
   const [deletingExamBusy, setDeletingExamBusy] = useState(false);
@@ -150,6 +154,8 @@ export default function AdminHome() {
       duration_minutes: exam.duration_minutes,
       cohort: exam.cohort ?? '',
       pass_percentage: exam.pass_percentage != null ? String(exam.pass_percentage) : '',
+      randomize_questions: exam.randomize_questions,
+      randomize_options: exam.randomize_options,
     });
   };
 
@@ -164,6 +170,8 @@ export default function AdminHome() {
         duration_minutes: Number(examEditForm.duration_minutes),
         cohort: examEditForm.cohort || null,
         pass_percentage: examEditForm.pass_percentage ? Number(examEditForm.pass_percentage) : null,
+        randomize_questions: examEditForm.randomize_questions,
+        randomize_options: examEditForm.randomize_options,
       });
       setEditingExam(null);
       await load();
@@ -255,6 +263,8 @@ export default function AdminHome() {
         duration_minutes: Number(form.duration_minutes),
         cohort: form.cohort || null,
         pass_percentage: form.pass_percentage ? Number(form.pass_percentage) : null,
+        randomize_questions: form.randomize_questions,
+        randomize_options: form.randomize_options,
       });
       navigate(`/admin/exams/${exam.id}`);
     } catch (err) {
@@ -389,6 +399,24 @@ export default function AdminHome() {
                 />
               </label>
             </div>
+            <div className="row-form">
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={form.randomize_questions}
+                  onChange={(e) => setForm({ ...form, randomize_questions: e.target.checked })}
+                />
+                Shuffle question order per student
+              </label>
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={form.randomize_options}
+                  onChange={(e) => setForm({ ...form, randomize_options: e.target.checked })}
+                />
+                Shuffle answer options per student
+              </label>
+            </div>
             <div className="form-actions">
               <button className="btn primary" disabled={creating}>
                 {creating ? 'Creating…' : 'Create & open builder'}
@@ -459,8 +487,8 @@ export default function AdminHome() {
             </h2>
           </div>
           <p className="muted small">
-            CSV columns: <code>enrollment_id, name, email, cohort</code>. Email is required —
-            students sign in via a link sent to it.
+            CSV columns: <code>enrollment_id, name, email, cohort</code>. Email is required,
+            since students sign in via a link sent to it.
           </p>
           <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex' }}>
             <UploadCloud size={15} />
@@ -731,6 +759,28 @@ export default function AdminHome() {
                     />
                   </label>
                 </div>
+                <div className="row-form">
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.randomize_questions}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, randomize_questions: e.target.checked })
+                      }
+                    />
+                    Shuffle question order per student
+                  </label>
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.randomize_options}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, randomize_options: e.target.checked })
+                      }
+                    />
+                    Shuffle answer options per student
+                  </label>
+                </div>
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn" onClick={() => setEditingExam(null)}>
@@ -751,7 +801,7 @@ export default function AdminHome() {
           description={
             <>
               This will permanently delete <strong>{deletingExam.title}</strong>. Exams with
-              student attempts cannot be deleted — close them instead.
+              student attempts cannot be deleted. Close them instead.
             </>
           }
           confirmLabel="Delete exam"
@@ -829,7 +879,7 @@ export default function AdminHome() {
           description={
             <>
               This will permanently delete <strong>{deletingStudent.name}</strong> (
-              {deletingStudent.student_id}). Students with exam attempts cannot be deleted — set
+              {deletingStudent.student_id}). Students with exam attempts cannot be deleted. Set
               them inactive instead.
             </>
           }

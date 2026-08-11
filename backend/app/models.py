@@ -69,6 +69,16 @@ class JudgeStatus(str, enum.Enum):
 class JudgeMode(str, enum.Enum):
     sample = "sample"
     final = "final"
+    # Ad-hoc run against student-typed input with no expected output to grade against.
+    custom = "custom"
+
+
+class ProblemType(str, enum.Enum):
+    # The student's code is the whole program: it reads stdin, prints stdout.
+    stdio = "stdio"
+    # The student writes only a function body; the judge supplies a generated
+    # driver that decodes structured parameters, calls it, and encodes the result.
+    function = "function"
 
 
 # --------------------------------------------------------------------------- users
@@ -247,12 +257,25 @@ class CodingProblem(Base, TimestampMixin):
         nullable=False,
     )
     statement_md: Mapped[str] = mapped_column(Text, nullable=False)
+    constraints_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_languages: Mapped[list[str]] = mapped_column(
         ARRAY(String(32)), default=lambda: ["python", "java", "cpp"], nullable=False
     )
     time_limit_ms: Mapped[int] = mapped_column(Integer, default=2000, nullable=False)
     memory_limit_mb: Mapped[int] = mapped_column(Integer, default=256, nullable=False)
     starter_code: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    problem_type: Mapped[ProblemType] = mapped_column(
+        Enum(ProblemType, name="problem_type"),
+        default=ProblemType.stdio,
+        server_default=ProblemType.stdio.value,
+        nullable=False,
+    )
+    # Only set (and only meaningful) when problem_type is "function".
+    function_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    return_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Ordered [{"name": str, "type": str}, ...] — see app.services.harness.PARAM_TYPES
+    # for the valid type strings.
+    parameters: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     question: Mapped[Question] = relationship(back_populates="coding_problem")
     test_cases: Mapped[list[TestCase]] = relationship(
@@ -269,6 +292,12 @@ class TestCase(Base):
     )
     stdin: Mapped[str] = mapped_column(Text, default="", nullable=False)
     expected_stdout: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Function-mode equivalents of stdin/expected_stdout above — only one pair is
+    # ever populated, depending on the parent problem's problem_type.
+    param_values: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    expected_value: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    # Only meaningful for sample cases — shown as the worked-example explanation.
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Sample cases are the only ones a student can see or run against.
     is_sample: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     weight: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -369,6 +398,14 @@ class JudgeRun(Base):
     language: Mapped[str] = mapped_column(String(32), nullable=False)
     code_text: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[JudgeMode] = mapped_column(Enum(JudgeMode, name="judge_mode"), nullable=False)
+    # Set when this run targets one specific sample case rather than all of them.
+    test_case_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("test_cases.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set for JudgeMode.custom runs — student-typed input with no expected output.
+    custom_stdin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Function-mode equivalent of custom_stdin above — ordered param values.
+    custom_params: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[JudgeStatus] = mapped_column(
         Enum(JudgeStatus, name="judge_status"), default=JudgeStatus.queued, nullable=False
     )
