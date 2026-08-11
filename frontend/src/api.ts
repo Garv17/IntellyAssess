@@ -180,6 +180,14 @@ export const api = {
     request<Exam>(`/api/admin/exams/${examId}`, { method: 'PATCH', body: payload }),
   deleteExam: (examId: string) =>
     request<void>(`/api/admin/exams/${examId}`, { method: 'DELETE' }),
+  uploadSebConfig: (examId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<{ seb_url: string }>(`/api/admin/exams/${examId}/seb-config`, {
+      method: 'POST',
+      formData: fd,
+    });
+  },
   sections: (examId: string) => request<Section[]>(`/api/admin/exams/${examId}/sections`),
   createSection: (examId: string, payload: unknown) =>
     request<Section>(`/api/admin/exams/${examId}/sections`, { method: 'POST', body: payload }),
@@ -593,6 +601,8 @@ export interface Exam {
   cohort: string | null;
   pass_percentage: number | null;
   created_at: string;
+  requires_seb: boolean;
+  seb_config_key: string | null;
 }
 export interface MagicLinkSent {
   message: string;

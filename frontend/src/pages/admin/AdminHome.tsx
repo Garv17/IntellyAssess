@@ -68,7 +68,10 @@ export default function AdminHome() {
     pass_percentage: '',
     randomize_questions: true,
     randomize_options: true,
+    requires_seb: false,
+    seb_config_key: '',
   });
+  const [sebUploading, setSebUploading] = useState(false);
   const [deletingExam, setDeletingExam] = useState<Exam | null>(null);
   const [deletingExamBusy, setDeletingExamBusy] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -82,6 +85,8 @@ export default function AdminHome() {
   const [deletingStudentBusy, setDeletingStudentBusy] = useState(false);
   const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
   const [sendingBulkLinks, setSendingBulkLinks] = useState(false);
+  const [inviteExamId, setInviteExamId] = useState('');
+  const [sendingInvites, setSendingInvites] = useState(false);
 
   const load = async () => {
     try {
@@ -140,6 +145,20 @@ export default function AdminHome() {
     }
   };
 
+  const sendSebInvites = async () => {
+    if (selectedStudentIds.size === 0 || !inviteExamId) return;
+    setSendingInvites(true);
+    try {
+      const result = await api.sendSebInvites(inviteExamId, [...selectedStudentIds]);
+      toast.success(`Queued SEB invites for ${result.queued} student${result.queued === 1 ? '' : 's'}`);
+      setSelectedStudentIds(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not queue the SEB invites');
+    } finally {
+      setSendingInvites(false);
+    }
+  };
+
   useEffect(() => {
     void load();
     void loadStudents();
@@ -156,6 +175,8 @@ export default function AdminHome() {
       pass_percentage: exam.pass_percentage != null ? String(exam.pass_percentage) : '',
       randomize_questions: exam.randomize_questions,
       randomize_options: exam.randomize_options,
+      requires_seb: exam.requires_seb,
+      seb_config_key: exam.seb_config_key ?? '',
     });
   };
 
@@ -172,12 +193,27 @@ export default function AdminHome() {
         pass_percentage: examEditForm.pass_percentage ? Number(examEditForm.pass_percentage) : null,
         randomize_questions: examEditForm.randomize_questions,
         randomize_options: examEditForm.randomize_options,
+        requires_seb: examEditForm.requires_seb,
+        seb_config_key: examEditForm.seb_config_key || null,
       });
       setEditingExam(null);
       await load();
       toast.success('Exam updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update the exam');
+    }
+  };
+
+  const uploadSebFile = async (file: File) => {
+    if (!editingExam) return;
+    setSebUploading(true);
+    try {
+      await api.uploadSebConfig(editingExam.id, file);
+      toast.success('SEB config file uploaded');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not upload the .seb file');
+    } finally {
+      setSebUploading(false);
     }
   };
 
@@ -622,21 +658,45 @@ export default function AdminHome() {
             </button>
           )}
           {selectedStudentIds.size > 0 && (
-            <button
-              className="btn primary"
-              disabled={sendingBulkLinks}
-              onClick={() => void sendBulkMagicLinks()}
-            >
-              {sendingBulkLinks && <Loader2 size={15} className="spinner" />}
-              {sendingBulkLinks
-                ? 'Sending…'
-                : `Send login link to ${selectedStudentIds.size} selected`}
-            </button>
+            <>
+              <button
+                className="btn primary"
+                disabled={sendingBulkLinks}
+                onClick={() => void sendBulkMagicLinks()}
+              >
+                {sendingBulkLinks && <Loader2 size={15} className="spinner" />}
+                {sendingBulkLinks
+                  ? 'Sending…'
+                  : `Send login link to ${selectedStudentIds.size} selected`}
+              </button>
+              <label>
+                SEB invite for
+                <select value={inviteExamId} onChange={(e) => setInviteExamId(e.target.value)}>
+                  <option value="">Choose exam…</option>
+                  {exams.map((exam) => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="btn"
+                disabled={sendingInvites || !inviteExamId}
+                onClick={() => void sendSebInvites()}
+              >
+                {sendingInvites && <Loader2 size={15} className="spinner" />}
+                {sendingInvites
+                  ? 'Sending…'
+                  : `Send SEB invite to ${selectedStudentIds.size} selected`}
+              </button>
+            </>
           )}
         </div>
         <p className="muted small">
           Tip: filter by cohort (e.g. one college's batch), select all, then send login links to
-          everyone shown at once.
+          everyone shown at once. Only exams with "requires SEB" turned on need the invite flow —
+          use the plain login link for everything else.
         </p>
         {studentsLoading ? (
           <SkeletonTable rows={4} />
@@ -781,6 +841,45 @@ export default function AdminHome() {
                     Shuffle answer options per student
                   </label>
                 </div>
+                <div className="row-form">
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.requires_seb}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, requires_seb: e.target.checked })
+                      }
+                    />
+                    Requires Safe Exam Browser
+                  </label>
+                </div>
+                {examEditForm.requires_seb && (
+                  <div className="row-form">
+                    <label className="grow">
+                      Config Key
+                      <input
+                        value={examEditForm.seb_config_key}
+                        onChange={(e) =>
+                          setExamEditForm({ ...examEditForm, seb_config_key: e.target.value })
+                        }
+                        placeholder="copied from the SEB Config Tool's Exam tab"
+                      />
+                    </label>
+                    <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex' }}>
+                      <UploadCloud size={15} />
+                      {sebUploading ? 'Uploading…' : 'Upload .seb file'}
+                      <input
+                        type="file"
+                        accept=".seb"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) void uploadSebFile(file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn" onClick={() => setEditingExam(null)}>

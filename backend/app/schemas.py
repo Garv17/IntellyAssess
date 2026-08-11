@@ -246,6 +246,8 @@ class ExamCreate(BaseModel):
     randomize_options: bool = True
     cohort: str | None = None
     pass_percentage: float | None = Field(default=None, ge=0, le=100)
+    requires_seb: bool = False
+    seb_config_key: str | None = Field(default=None, max_length=64)
 
 
 class ExamOut(ORMModel):
@@ -262,6 +264,8 @@ class ExamOut(ORMModel):
     cohort: str | None
     pass_percentage: float | None
     created_at: datetime
+    requires_seb: bool
+    seb_config_key: str | None
 
 
 class SectionCreate(BaseModel):

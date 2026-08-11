@@ -782,6 +782,34 @@ async def upload_image(
     return {"image_url": f"/uploads/{name}", "filename": name}
 
 
+@router.post("/exams/{exam_id}/seb-config", status_code=status.HTTP_201_CREATED)
+async def upload_seb_config(
+    exam_id: uuid.UUID,
+    admin: AdminDep,
+    db: DbDep,
+    file: Annotated[UploadFile, File()],
+) -> dict[str, str]:
+    """Stores the exam's one shared .seb file at the exact path Dashboard.tsx and
+    InviteLanding.tsx already link to (/uploads/seb/<exam_id>.seb) — no more manual
+    `docker compose cp` into the uploads volume. Doesn't touch requires_seb or
+    seb_config_key; those are set via PATCH /exams/{exam_id} same as any other field,
+    since the Config Key has to be copied from the Config Tool by hand regardless."""
+    await _get_exam(db, exam_id)
+    if not (file.filename or "").lower().endswith(".seb"):
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Expected a .seb file")
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"File exceeds {settings.max_upload_mb} MB",
+        )
+
+    target_dir = Path(settings.upload_dir) / "seb"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / f"{exam_id}.seb").write_bytes(data)
+    return {"seb_url": f"/uploads/seb/{exam_id}.seb"}
+
+
 def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
     """Validates and computes the problem_type-dependent fields shared by create
     and update. For problem_type="function", starter_code is always derived from
