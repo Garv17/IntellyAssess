@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import secrets
 import statistics
 import uuid
 from datetime import UTC, datetime
@@ -37,6 +39,7 @@ from app.models import (
     DIGroup,
     Exam,
     ExamAttempt,
+    ExamInvite,
     ExamStatus,
     JudgeMode,
     JudgeRun,
@@ -69,6 +72,8 @@ from app.schemas import (
     DiContext,
     ExamCreate,
     ExamOut,
+    InviteCreateRequest,
+    InviteQueued,
     LiveMonitorOut,
     LiveStudentRow,
     MagicLinkSent,
@@ -1146,6 +1151,63 @@ async def bulk_send_magic_links(
 
     send_bulk_magic_links.delay(ids)
     return BulkMagicLinkQueued(queued=len(ids))
+
+
+@router.post("/exams/{exam_id}/invites", response_model=InviteQueued)
+async def create_exam_invites(
+    exam_id: uuid.UUID, payload: InviteCreateRequest, admin: AdminDep, db: DbDep
+) -> InviteQueued:
+    """One shared Start URL / Config Key serves every invitee of this exam — see
+    SEB_INTEGRATION.md §6. Each student gets their own token (never stored raw);
+    re-inviting a student who already has a row just rotates their token, so an
+    old, possibly-forwarded email link stops working."""
+    exam = await _get_exam(db, exam_id)
+    result = await db.execute(
+        select(Student).where(Student.id.in_(payload.student_ids), Student.is_active.is_(True))
+    )
+    students = list(result.scalars())
+    if not students:
+        return InviteQueued(queued=0)
+
+    existing_result = await db.execute(
+        select(ExamInvite).where(
+            ExamInvite.exam_id == exam_id,
+            ExamInvite.student_id.in_([s.id for s in students]),
+        )
+    )
+    existing_by_student = {inv.student_id: inv for inv in existing_result.scalars()}
+
+    items = []
+    for student in students:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        invite = existing_by_student.get(student.id)
+        if invite is None:
+            db.add(ExamInvite(exam_id=exam_id, student_id=student.id, token_hash=token_hash))
+        else:
+            invite.token_hash = token_hash
+        items.append(
+            {
+                "email": student.email,
+                "name": student.name,
+                "exam_title": exam.title,
+                "token": raw_token,
+            }
+        )
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="seb_invite_bulk_send",
+            meta={"exam_id": str(exam_id), "count": len(items)},
+        )
+    )
+
+    from app.tasks.mailer_tasks import send_bulk_invites
+
+    send_bulk_invites.delay(items)
+    return InviteQueued(queued=len(items))
 
 
 # ----------------------------------------------------------------- publish

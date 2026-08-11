@@ -125,6 +125,10 @@ class Exam(Base, TimestampMixin):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
     )
+    requires_seb: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # SHA-256 hex Config Key shown by the SEB Config Tool once a .seb file's settings
+    # are finalized. Only meaningful when requires_seb is true.
+    seb_config_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     sections: Mapped[list[Section]] = relationship(
         back_populates="exam", cascade="all, delete-orphan", order_by="Section.order_index"
@@ -307,6 +311,9 @@ class ExamAttempt(Base, TimestampMixin):
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Advisory anti-cheat signals for human review; never auto-fails a student.
     focus_loss_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # True only when the exam required SEB and the Config Key check passed at start.
+    # Advisory record of the fact, not itself an enforcement point.
+    seb_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     student: Mapped[Student] = relationship(back_populates="attempts")
     answers: Mapped[list[Answer]] = relationship(
@@ -375,6 +382,29 @@ class JudgeRun(Base):
     )
 
     __table_args__ = (Index("ix_judge_runs_attempt_question", "attempt_id", "question_id"),)
+
+
+class ExamInvite(Base, TimestampMixin):
+    """One row per (exam, student). The emailed link only ever redeems to whichever
+    PIN is currently valid (never the raw token itself) — see app/routers/invites.py
+    for why that's what makes the link safe against email link-scanners."""
+
+    __tablename__ = "exam_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    exam_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # sha256 of the emailed token — never store it raw.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    pin_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pin_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pin_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("exam_id", "student_id", name="uq_invite_exam_student"),)
 
 
 class AuditLog(Base):

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from app import cache
 from app.config import settings
 from app.db import engine
-from app.routers import admin, auth, student
+from app.routers import admin, auth, invites, student
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +73,7 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
 
 
 app.include_router(auth.router)
+app.include_router(invites.router)
 app.include_router(student.router)
 app.include_router(admin.router)
 

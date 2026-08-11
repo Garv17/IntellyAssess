@@ -53,3 +53,30 @@ def send_magic_link_email_sync(to_email: str, to_name: str, link: str) -> None:
     if response.status_code >= 300:
         log.error("brevo send failed: %s %s", response.status_code, response.text)
         response.raise_for_status()
+
+
+def _invite_payload(to_email: str, to_name: str, exam_title: str, link: str) -> dict:
+    return {
+        "sender": {"name": settings.brevo_sender_name, "email": settings.brevo_sender_email},
+        "to": [{"email": to_email, "name": to_name}],
+        "subject": f"Your Safe Exam Browser PIN for {exam_title}",
+        "htmlContent": (
+            f"<p>Hi {to_name},</p>"
+            f'<p><a href="{link}">Open this link</a> to get your sign-in PIN for '
+            f"{exam_title}.</p>"
+            "<p>This link is safe to open in your normal browser or email app — it never "
+            "signs you in by itself. You'll type the PIN it shows you once Safe Exam "
+            "Browser has launched.</p>"
+        ),
+    }
+
+
+def send_invite_email_sync(to_email: str, to_name: str, exam_title: str, link: str) -> None:
+    """Blocking — used by the Celery bulk-invite task, same reasoning as the magic-link
+    sync variant above."""
+    payload = _invite_payload(to_email, to_name, exam_title, link)
+    with httpx.Client(timeout=10) as client:
+        response = client.post(BREVO_ENDPOINT, json=payload, headers=_headers())
+    if response.status_code >= 300:
+        log.error("brevo send failed: %s %s", response.status_code, response.text)
+        response.raise_for_status()

@@ -123,6 +123,7 @@ class ExamSummaryOut(ORMModel):
     ends_at: datetime | None
     status: ExamStatus
     attempt_status: AttemptStatus | None = None
+    requires_seb: bool = False
 
 
 # --------------------------------------------------------------- attempts
@@ -462,6 +463,26 @@ class BulkMagicLinkRequest(BaseModel):
 
 class BulkMagicLinkQueued(BaseModel):
     queued: int
+
+
+class InviteCreateRequest(BaseModel):
+    student_ids: list[uuid.UUID] = Field(min_length=1, max_length=2000)
+
+
+class InviteQueued(BaseModel):
+    queued: int
+
+
+class InviteRedeemOut(BaseModel):
+    exam_id: uuid.UUID
+    exam_title: str
+    pin: str
+    pin_expires_at: datetime
+
+
+class InvitePinLogin(BaseModel):
+    exam_id: uuid.UUID
+    pin: str = Field(min_length=4, max_length=8)
 
 
 class PublishResult(BaseModel):

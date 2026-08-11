@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import cache
 from app.config import settings
 from app.db import get_db
-from app.models import Admin, AttemptStatus, ExamAttempt, Student
+from app.models import Admin, AttemptStatus, Exam, ExamAttempt, Student
 from app.security import decode_token
+from app.seb import verify_seb_request
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -100,6 +101,18 @@ async def active_attempt(
     return attempt
 
 
+async def attempt_exam(
+    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
+) -> ExamAttempt:
+    """Same as active_attempt, plus the SEB Config Key check when the exam requires it."""
+    exam = await db.get(Exam, attempt.exam_id)
+    if exam and exam.requires_seb:
+        verify_seb_request(request, exam.seb_config_key)
+    return attempt
+
+
 async def resolve_deadline(attempt: ExamAttempt) -> datetime:
     """Redis is the fast path; the attempt row is the source of truth if Redis is cold."""
     deadline = await cache.get_deadline(str(attempt.id))
@@ -114,7 +127,7 @@ async def resolve_deadline(attempt: ExamAttempt) -> datetime:
 
 
 async def writable_attempt(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
 ) -> ExamAttempt:
     """Rejects writes past the deadline. This is what makes client clock tampering moot."""
     deadline = await resolve_deadline(attempt)

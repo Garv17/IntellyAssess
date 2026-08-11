@@ -5,8 +5,10 @@ import { tokens } from './api';
 import { ToastProvider } from './components/Toast';
 import Dashboard from './pages/Dashboard';
 import Exam from './pages/Exam';
+import InviteLanding from './pages/InviteLanding';
 import Login from './pages/Login';
 import MagicLinkCallback from './pages/MagicLinkCallback';
+import PinLogin from './pages/PinLogin';
 import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
@@ -31,6 +33,8 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/" element={<Login />} />
         <Route path="/admin/login" element={<Login admin />} />
         <Route path="/auth/magic" element={<MagicLinkCallback />} />
+        <Route path="/invite" element={<InviteLanding />} />
+        <Route path="/pin-login" element={<PinLogin />} />
 
         <Route
           path="/dashboard"

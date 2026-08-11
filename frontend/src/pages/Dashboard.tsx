@@ -7,6 +7,10 @@ import DropdownMenu, { DropdownItem } from '../components/DropdownMenu';
 import EmptyState from '../components/EmptyState';
 import { SkeletonCardGrid } from '../components/Skeleton';
 
+// SEB's own browser identifies itself in the UA string (e.g. "...SEB/3.7...").
+// Used to tell "launch SEB" (outside it) apart from "start exam" (already inside it).
+const inSafeExamBrowser = /SEB[/ ]|SafeExamBrowser/i.test(navigator.userAgent);
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [me, setMe] = useState<Me | null>(null);
@@ -135,23 +139,43 @@ export default function Dashboard() {
                   ) : (
                     <>
                       <ul className="rules">
-                        <li>One attempt only — the timer starts as soon as you begin.</li>
+                        <li>
+                          {exam.requires_seb
+                            ? 'This exam must be taken inside Safe Exam Browser.'
+                            : 'One attempt only — the timer starts as soon as you begin.'}
+                        </li>
                         <li>Answers save automatically; refreshing is safe.</li>
                         <li>The exam submits itself when the timer reaches zero.</li>
                       </ul>
-                      <button
-                        className="btn primary full"
-                        disabled={starting === exam.id}
-                        onClick={() => void start(exam.id)}
-                      >
-                        {starting === exam.id ? (
-                          <>
-                            <TimerReset size={15} className="spinner" /> Starting…
-                          </>
-                        ) : (
-                          'Start exam'
-                        )}
-                      </button>
+                      {exam.requires_seb && !inSafeExamBrowser ? (
+                        <>
+                          <a
+                            className="btn primary full"
+                            href={`seb://${window.location.host}/uploads/seb/${exam.id}.seb`}
+                          >
+                            Launch in Safe Exam Browser
+                          </a>
+                          <p className="muted small">
+                            Don't have SEB installed?{' '}
+                            <a href={`/uploads/seb/${exam.id}.seb`}>Download the config file</a> and
+                            open it after installing Safe Exam Browser.
+                          </p>
+                        </>
+                      ) : (
+                        <button
+                          className="btn primary full"
+                          disabled={starting === exam.id}
+                          onClick={() => void start(exam.id)}
+                        >
+                          {starting === exam.id ? (
+                            <>
+                              <TimerReset size={15} className="spinner" /> Starting…
+                            </>
+                          ) : (
+                            'Start exam'
+                          )}
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

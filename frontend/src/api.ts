@@ -237,6 +237,18 @@ export const api = {
       method: 'POST',
       body: { student_ids: studentIds },
     }),
+  sendSebInvites: (examId: string, studentIds: string[]) =>
+    request<{ queued: number }>(`/api/admin/exams/${examId}/invites`, {
+      method: 'POST',
+      body: { student_ids: studentIds },
+    }),
+  redeemInvite: (token: string) =>
+    request<InviteRedeem>(`/api/invite/redeem?token=${encodeURIComponent(token)}`),
+  pinLogin: (examId: string, pin: string) =>
+    request<TokenPair>('/api/invite/pin-login', {
+      method: 'POST',
+      body: { exam_id: examId, pin },
+    }),
   publish: (examId: string) =>
     request<PublishResult>(`/api/admin/exams/${examId}/publish`, { method: 'POST' }),
   liveMonitor: (examId: string) => request<LiveMonitor>(`/api/admin/exams/${examId}/live`),
@@ -344,6 +356,7 @@ export interface ExamSummary {
   ends_at: string | null;
   status: string;
   attempt_status: string | null;
+  requires_seb: boolean;
 }
 export interface AnswerSave {
   question_id: string;
@@ -540,6 +553,12 @@ export interface MagicLinkSent {
 }
 export interface BulkMagicLinkQueued {
   queued: number;
+}
+export interface InviteRedeem {
+  exam_id: string;
+  exam_title: string;
+  pin: string;
+  pin_expires_at: string;
 }
 export interface BulkResult {
   created: number;

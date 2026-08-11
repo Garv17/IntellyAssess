@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models import Student
 from app.security import create_magic_token
-from app.services.email import send_magic_link_email_sync
+from app.services.email import send_invite_email_sync, send_magic_link_email_sync
 from app.sync_db import session_scope
 from app.tasks.celery_app import celery_app
 
@@ -41,3 +41,21 @@ def send_bulk_magic_links(student_ids: list[str]) -> dict:
                 failed += 1
 
     return {"sent": sent, "failed": failed, "requested": len(student_ids)}
+
+
+@celery_app.task(name="mailer.send_bulk_invites")
+def send_bulk_invites(items: list[dict]) -> dict:
+    """items: [{"email", "name", "exam_title", "token"}, ...] — the raw invite
+    tokens exist only transiently in this task's payload (Redis-backed broker);
+    the exam_invites table only ever stores their hash, so this queue message is
+    the one place a raw token is ever seen outside the admin request/response."""
+    sent, failed = 0, 0
+    for item in items:
+        link = f"{settings.frontend_base_url}/invite?token={item['token']}"
+        try:
+            send_invite_email_sync(item["email"], item["name"], item["exam_title"], link)
+            sent += 1
+        except Exception:
+            log.exception("bulk invite send failed for %s", item["email"])
+            failed += 1
+    return {"sent": sent, "failed": failed, "requested": len(items)}

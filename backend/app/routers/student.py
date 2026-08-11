@@ -13,7 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import cache
 from app.config import settings
 from app.db import get_db
-from app.deps import active_attempt, current_student, resolve_deadline, writable_attempt
+from app.deps import (
+    active_attempt,
+    attempt_exam,
+    current_student,
+    resolve_deadline,
+    writable_attempt,
+)
 from app.models import (
     Answer,
     AttemptStatus,
@@ -48,6 +54,7 @@ from app.schemas import (
 from app.security import create_access_token
 from app.services import answers as answer_service
 from app.services import grading, paper
+from app.seb import verify_seb_request
 
 router = APIRouter(prefix="/api/exam", tags=["student"])
 
@@ -91,6 +98,7 @@ async def available_exams(
             ends_at=exam.ends_at,
             status=exam.status,
             attempt_status=attempt_status.get(exam.id),
+            requires_seb=exam.requires_seb,
         )
         for exam in exams
     ]
@@ -119,6 +127,8 @@ async def start_exam(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Exam window has closed")
     if exam.cohort and exam.cohort != student.cohort:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not enrolled in this exam")
+    if exam.requires_seb:
+        verify_seb_request(request, exam.seb_config_key)
 
     existing = await db.execute(
         select(ExamAttempt).where(
@@ -145,6 +155,7 @@ async def start_exam(
             question_order=paper.build_question_order(exam, seed),
             ip_address=request.client.host if request.client else None,
             user_agent=(request.headers.get("user-agent") or "")[:512],
+            seb_verified=exam.requires_seb,
         )
         db.add(attempt)
         try:
@@ -196,7 +207,7 @@ async def start_exam(
 
 @router.get("/state", response_model=ExamStateOut)
 async def exam_state(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ExamStateOut:
     """Everything needed to rebuild the UI after a refresh or device switch."""
@@ -221,7 +232,7 @@ async def exam_state(
 
 @router.get("/questions", response_model=ExamPaperOut)
 async def exam_questions(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ExamPaperOut:
     exam = await paper.load_exam_tree(db, attempt.exam_id)
@@ -264,7 +275,7 @@ async def save_single_answer(
 
 @router.post("/heartbeat", response_model=HeartbeatOut)
 async def heartbeat(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
     focus_lost: bool = False,
 ) -> HeartbeatOut:
@@ -362,7 +373,7 @@ async def get_code_run(
 
 @router.post("/submit", response_model=SubmitReceipt)
 async def submit_exam(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
     auto: bool = False,
 ) -> SubmitReceipt:
