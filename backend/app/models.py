@@ -276,6 +276,16 @@ class CodingProblem(Base, TimestampMixin):
     # Ordered [{"name": str, "type": str}, ...] — see app.services.harness.PARAM_TYPES
     # for the valid type strings.
     parameters: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # SQL-only fields below. Only meaningful when "sql" is in allowed_languages.
+    # dialect is display metadata only — every dialect still executes on the
+    # sqlite sandbox in services/sandbox.py; there's no per-dialect judge yet.
+    sql_dialect: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Shared CREATE TABLE + INSERT script for the whole question — test cases no
+    # longer duplicate this in their own stdin (see TestCase.stdin below).
+    sql_schema_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional display-only column names for the result grid; grading is still a
+    # raw text compare of expected_stdout, this never affects that.
+    sql_result_columns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     question: Mapped[Question] = relationship(back_populates="coding_problem")
     test_cases: Mapped[list[TestCase]] = relationship(
@@ -290,6 +300,9 @@ class TestCase(Base):
     coding_problem_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("coding_problems.id", ondelete="CASCADE"), nullable=False
     )
+    # For SQL problems, the schema/seed data lives on CodingProblem.sql_schema_sql
+    # instead — stdin here is normally blank and only holds a rare per-case setup
+    # addendum (e.g. an extra row needed just for one hidden edge case).
     stdin: Mapped[str] = mapped_column(Text, default="", nullable=False)
     expected_stdout: Mapped[str] = mapped_column(Text, default="", nullable=False)
     # Function-mode equivalents of stdin/expected_stdout above — only one pair is

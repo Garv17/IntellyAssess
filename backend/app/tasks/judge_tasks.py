@@ -53,13 +53,23 @@ def _evaluate(
     return _evaluate_stdio(problem, cases, language, code, reveal)
 
 
+def _effective_stdin(problem: CodingProblem, language: str, case: TestCase) -> str:
+    """The script actually fed to the sandbox for one test case. For SQL, that's
+    the question's shared schema/seed script plus this case's (usually empty)
+    per-case addendum — schema no longer lives on the test case itself."""
+    if language == "sql" and problem.sql_schema_sql:
+        return f"{problem.sql_schema_sql}\n{case.stdin}" if case.stdin else problem.sql_schema_sql
+    return case.stdin
+
+
 def _evaluate_stdio(
     problem: CodingProblem, cases: list[TestCase], language: str, code: str, reveal: bool
 ) -> tuple[int, int, float, list[dict], str | None]:
+    stdin_batch = [_effective_stdin(problem, language, c) for c in cases]
     results, compile_error = sandbox.execute(
         language=language,
         code=code,
-        stdin_batch=[c.stdin for c in cases],
+        stdin_batch=stdin_batch,
         time_limit_ms=problem.time_limit_ms,
         memory_limit_mb=problem.memory_limit_mb,
     )
@@ -93,8 +103,10 @@ def _evaluate_stdio(
             {
                 "index": index,
                 "passed": ok,
-                # Hidden case contents are never revealed, only the verdict.
-                "stdin": case.stdin if reveal else None,
+                # Hidden case contents are never revealed, only the verdict. The
+                # effective (schema-combined) script is stored here rather than
+                # the raw case.stdin, which is usually blank for SQL.
+                "stdin": stdin_batch[index] if reveal else None,
                 "expected": case.expected_stdout if reveal else None,
                 "actual": result.stdout if reveal else None,
                 "stderr": result.stderr if reveal else None,
@@ -178,6 +190,8 @@ def _run_custom(run: JudgeRun, problem: CodingProblem) -> dict:
     else:
         program = run.code_text
         stdin = run.custom_stdin or ""
+        if run.language == "sql" and problem.sql_schema_sql:
+            stdin = f"{problem.sql_schema_sql}\n{stdin}" if stdin else problem.sql_schema_sql
 
     results, compile_error = sandbox.execute(
         language=run.language,
@@ -208,6 +222,25 @@ def _run_custom(run: JudgeRun, problem: CodingProblem) -> dict:
     ]
     run.status = JudgeStatus.done
     return {"run_id": str(run.id), "passed": 0, "total": 0, "error": None}
+
+
+@celery_app.task(name="judge.preview_sql", bind=True, max_retries=0)
+def preview_sql(self, setup_sql: str, query_sql: str) -> dict:
+    """Admin-builder "run reference query" preview — no DB writes, no grading,
+    just executes and reports what happened. Runs on the judge queue (routed via
+    the "judge.*" task_routes entry in celery_app.py) rather than in the api
+    process, since only the judge worker container has Docker socket access
+    (see docker-compose.yml) — the api container intentionally does not."""
+    results, compile_error = sandbox.execute(
+        language="sql", code=query_sql, stdin_batch=[setup_sql], time_limit_ms=5000, memory_limit_mb=128
+    )
+    if compile_error:
+        return {"stdout": "", "error": compile_error}
+    result = results[0]
+    if result.verdict != "ok":
+        message = result.stderr.strip() or f"Query failed ({result.verdict})"
+        return {"stdout": sandbox.normalize(result.stdout), "error": message}
+    return {"stdout": sandbox.normalize(result.stdout), "error": None}
 
 
 @celery_app.task(name="judge.run", bind=True, max_retries=1)

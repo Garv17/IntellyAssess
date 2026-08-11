@@ -1,13 +1,14 @@
 """add seb config to exams and seb_verified to exam_attempts
 
 Revision ID: seb1
-Revises: 05ad3e828f25
+Revises: 1365ff87ccfa
 Create Date: 2026-08-10
 
 Rebased onto the feature/magic-link baseline (0001 -> 9adcd82108f8 ->
-05ad3e828f25) after merging that branch in — this can no longer claim to be
-the repo's first migration, and "0001" collided with that branch's own
-baseline revision id.
+05ad3e828f25 -> 1365ff87ccfa) after merging that branch in twice — first
+onto 05ad3e828f25, then re-pointed here once magic-link added its own SQL
+question migration on top of that same revision, which would otherwise have
+left two heads.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "seb1"
-down_revision: str | Sequence[str] | None = "05ad3e828f25"
+down_revision: str | Sequence[str] | None = "1365ff87ccfa"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

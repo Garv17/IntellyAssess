@@ -84,6 +84,9 @@ class CodingProblemOut(ORMModel):
     function_name: str | None = None
     return_type: str | None = None
     parameters: list[dict[str, str]] | None = None
+    sql_dialect: str | None = None
+    sql_schema_sql: str | None = None
+    sql_result_columns: list[str] | None = None
     sample_test_cases: list[TestCaseOut] = []
 
 
@@ -326,6 +329,10 @@ class DIGroupCreate(BaseModel):
 # knows how to compile/run each one.
 CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "sql"]
 
+# Display metadata only — every dialect still executes on the sqlite sandbox in
+# app.services.sandbox; there's no per-dialect judge yet.
+SqlDialect = Literal["sqlite", "mysql", "postgresql", "mssql"]
+
 # Must match app.services.harness.PARAM_TYPES — that's what actually knows how to
 # decode/encode each one, per language.
 ParamType = Literal[
@@ -393,6 +400,10 @@ class CodingCreate(BaseModel):
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
     difficulty: Literal["easy", "medium", "hard"] | None = None
+    # SQL-only — see CodingProblem.sql_dialect/sql_schema_sql/sql_result_columns.
+    sql_dialect: SqlDialect | None = None
+    sql_schema_sql: str | None = None
+    sql_result_columns: list[str] | None = None
 
 
 class QuestionAdminOut(ORMModel):
@@ -444,6 +455,9 @@ class CodingProblemAdminOut(ORMModel):
     function_name: str | None = None
     return_type: str | None = None
     parameters: list[dict[str, str]] | None = None
+    sql_dialect: str | None = None
+    sql_schema_sql: str | None = None
+    sql_result_columns: list[str] | None = None
     test_cases: list[TestCaseAdminOut] = []
 
 
@@ -505,6 +519,9 @@ class CodingUpdate(BaseModel):
     test_cases: list[TestCaseCreate] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list, max_length=10)
     difficulty: Literal["easy", "medium", "hard"] | None = None
+    sql_dialect: SqlDialect | None = None
+    sql_schema_sql: str | None = None
+    sql_result_columns: list[str] | None = None
 
 
 class StudentCreate(BaseModel):

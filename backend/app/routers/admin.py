@@ -111,8 +111,9 @@ from app.schemas import (
     TestCaseAdminOut,
 )
 from app.security import create_magic_token
-from app.services import export, harness, paper, sandbox
+from app.services import export, harness, paper
 from app.services.email import send_magic_link_email
+from app.tasks.judge_tasks import preview_sql as preview_sql_task
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -285,6 +286,9 @@ def _question_detail(question: Question) -> QuestionDetailOut:
             function_name=problem.function_name,
             return_type=problem.return_type,
             parameters=problem.parameters,
+            sql_dialect=problem.sql_dialect,
+            sql_schema_sql=problem.sql_schema_sql,
+            sql_result_columns=problem.sql_result_columns,
             test_cases=[
                 TestCaseAdminOut(
                     id=tc.id,
@@ -562,6 +566,9 @@ async def copy_question(
             function_name=source_problem.function_name,
             return_type=source_problem.return_type,
             parameters=list(source_problem.parameters) if source_problem.parameters else None,
+            sql_dialect=source_problem.sql_dialect,
+            sql_schema_sql=source_problem.sql_schema_sql,
+            sql_result_columns=list(source_problem.sql_result_columns) if source_problem.sql_result_columns else None,
         )
         db.add(new_problem)
         await db.flush()
@@ -815,6 +822,20 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
     and update. For problem_type="function", starter_code is always derived from
     the signature here — never taken from the client — so the boilerplate a
     student sees can never drift from what the generated driver actually expects."""
+    if "sql" in payload.allowed_languages:
+        if not (payload.sql_schema_sql or "").strip():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "SQL questions need a schema/seed data script",
+            )
+        sql_fields = {
+            "sql_dialect": payload.sql_dialect,
+            "sql_schema_sql": payload.sql_schema_sql,
+            "sql_result_columns": payload.sql_result_columns,
+        }
+    else:
+        sql_fields = {"sql_dialect": None, "sql_schema_sql": None, "sql_result_columns": None}
+
     if payload.problem_type == "function":
         if not payload.function_name or not payload.return_type or not payload.parameters:
             raise HTTPException(
@@ -852,6 +873,7 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
             "return_type": payload.return_type,
             "parameters": parameters,
             "starter_code": starter_code,
+            **sql_fields,
         }
 
     return {
@@ -860,6 +882,7 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
         "return_type": None,
         "parameters": None,
         "starter_code": payload.starter_code,
+        **sql_fields,
     }
 
 
@@ -885,18 +908,17 @@ async def preview_boilerplate(payload: BoilerplatePreviewRequest, admin: AdminDe
 async def preview_sql(payload: SqlPreviewRequest, admin: AdminDep) -> SqlPreviewOut:
     """No DB writes — actually runs the reference query against the setup SQL for one
     test case, so an admin never has to hand-compute a GROUP BY/JOIN result to fill in
-    expected_stdout. Same sqlite image and stdin-then-code convention judge_tasks.py
-    uses for real submissions (see LANGUAGES["sql"] in services/sandbox.py)."""
-    results, compile_error = await asyncio.to_thread(
-        sandbox.execute, "sql", payload.query_sql, [payload.setup_sql], 5000, 128
-    )
-    if compile_error:
-        return SqlPreviewOut(stdout="", error=compile_error)
-    result = results[0]
-    if result.verdict != "ok":
-        message = result.stderr.strip() or f"Query failed ({result.verdict})"
-        return SqlPreviewOut(stdout=sandbox.normalize(result.stdout), error=message)
-    return SqlPreviewOut(stdout=sandbox.normalize(result.stdout))
+    expected_stdout. Dispatched onto the judge queue (judge.preview_sql) rather than
+    run in this process — only the judge worker container has Docker socket access
+    (see docker-compose.yml); the api container intentionally does not."""
+    try:
+        result = await asyncio.to_thread(
+            preview_sql_task.apply_async(args=[payload.setup_sql, payload.query_sql]).get,
+            timeout=15,
+        )
+    except Exception as exc:
+        return SqlPreviewOut(stdout="", error=f"Judge is temporarily unavailable: {exc}")
+    return SqlPreviewOut(stdout=result["stdout"], error=result["error"])
 
 
 @router.post("/sections/{section_id}/coding", status_code=status.HTTP_201_CREATED)
@@ -1416,6 +1438,8 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
                     problems.append(f"{label}: needs at least one hidden test case")
                 if not problem.allowed_languages:
                     problems.append(f"{label}: no languages allowed")
+                if "sql" in problem.allowed_languages and not problem.sql_schema_sql:
+                    problems.append(f"{label}: SQL questions need a schema/seed data script")
 
         for group in section.di_groups:
             if not group.questions:

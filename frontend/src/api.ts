@@ -438,6 +438,9 @@ export interface CodingProblem {
   function_name: string | null;
   return_type: string | null;
   parameters: ParamDef[] | null;
+  sql_dialect: string | null;
+  sql_schema_sql: string | null;
+  sql_result_columns: string[] | null;
   sample_test_cases: TestCase[];
 }
 export interface DIGroup {
@@ -509,6 +512,9 @@ export interface CodingProblemAdmin {
   function_name: string | null;
   return_type: string | null;
   parameters: ParamDef[] | null;
+  sql_dialect: string | null;
+  sql_schema_sql: string | null;
+  sql_result_columns: string[] | null;
   test_cases: TestCaseAdmin[];
 }
 export type Difficulty = 'easy' | 'medium' | 'hard';
