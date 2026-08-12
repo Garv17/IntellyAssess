@@ -3,6 +3,13 @@ a batch of students. Idempotent — safe to re-run.
 
     python -m scripts.seed
     python -m scripts.seed --students 400   # load-test sized cohort
+
+Pass one or more --admin flags to create real admin accounts instead — this
+skips the demo exam/students entirely, so it's the one to use against a
+production database:
+
+    python -m scripts.seed --admin "alice@company.com:Alice:S0meStr0ngPass!" \\
+                            --admin "bob@company.com:Bob:An0therPass!"
 """
 
 from __future__ import annotations
@@ -491,170 +498,55 @@ async def seed(student_count: int) -> None:
         print("students sign in via magic link sent to their email, e.g. stu0001@example.com")
 
 
-async def seed_loadtest(student_count: int, duration_minutes: int) -> None:
-    """A dedicated exam + student pool for scripts/loadtest.py and ramp_loadtest.py,
-    kept separate from the demo cohort so a load test never collides with (or
-    inflates) real-looking data. LT-prefixed ids and cohort="loadtest" only ever
-    show up here."""
+async def seed_admins(admins: list[tuple[str, str, str]]) -> None:
+    """Creates only admin accounts — no demo exam, no demo students. Idempotent
+    by email: an admin that already exists is left untouched (its password is
+    not reset/overwritten by a repeat run)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with SessionLocal() as db:
-        email, name, password = DEMO_ADMIN
-        admin = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
-        if admin is None:
-            admin = Admin(email=email, name=name, password_hash=hash_password(password))
-            db.add(admin)
-            await db.flush()
-            print(f"admin created: {email} / {password}")
-
-        exam = (
-            await db.execute(select(Exam).where(Exam.title == "Load Test Exam"))
-        ).scalar_one_or_none()
-        if exam is not None:
-            # Duration/window may need to grow for a longer run than last time.
-            exam.duration_minutes = duration_minutes
-            exam.ends_at = datetime.now(UTC) + timedelta(days=1)
-            exam.status = ExamStatus.published
-            print(f"load test exam already present; duration set to {duration_minutes}m")
-        else:
-            exam = Exam(
-                title="Load Test Exam",
-                description="Synthetic exam used only by scripts/loadtest.py.",
-                instructions_md="Answers save automatically. This exam is not scored.",
-                duration_minutes=duration_minutes,
-                status=ExamStatus.published,
-                starts_at=datetime.now(UTC) - timedelta(minutes=5),
-                ends_at=datetime.now(UTC) + timedelta(days=1),
-                randomize_questions=False,
-                randomize_options=False,
-                cohort="loadtest",
-                created_by=admin.id,
-            )
-            db.add(exam)
-            await db.flush()
-
-            section = Section(
-                exam_id=exam.id,
-                title="Section",
-                order_index=0,
-                marks_per_question=1.0,
-                negative_marks=0.0,
-            )
-            db.add(section)
-            await db.flush()
-            for idx, (body, options, correct) in enumerate(MCQS):
-                question = Question(
-                    section_id=section.id, type=QuestionType.mcq, body_md=body, order_index=idx
-                )
-                db.add(question)
-                await db.flush()
-                for oidx, option in enumerate(options):
-                    db.add(
-                        MCQOption(
-                            question_id=question.id,
-                            body=option,
-                            is_correct=oidx == correct,
-                            order_index=oidx,
-                        )
-                    )
-            print(f"load test exam created: {exam.id} ({duration_minutes}m, cohort=loadtest)")
-
-        # Added after the fact for exams seeded before coding support — checked every
-        # run so scripts/loadtest.py always has a coding question to save code_text
-        # against, not just MCQ options.
-        coding_section = (
-            await db.execute(
-                select(Section).where(Section.exam_id == exam.id, Section.title == "Coding")
-            )
-        ).scalar_one_or_none()
-        if coding_section is None:
-            coding_section = Section(
-                exam_id=exam.id,
-                title="Coding",
-                order_index=1,
-                marks_per_question=10.0,
-                negative_marks=0.0,
-            )
-            db.add(coding_section)
-            await db.flush()
-
-            code_question = Question(
-                section_id=coding_section.id,
-                type=QuestionType.coding,
-                body_md="Sum of two integers",
-                order_index=0,
-            )
-            db.add(code_question)
-            await db.flush()
-
-            problem = CodingProblem(
-                question_id=code_question.id,
-                statement_md=(
-                    "Read two space-separated integers from stdin and print their sum."
-                ),
-                allowed_languages=["python"],
-                time_limit_ms=2000,
-                memory_limit_mb=128,
-                starter_code={"python": "a, b = map(int, input().split())\nprint(a + b)\n"},
-            )
-            db.add(problem)
-            await db.flush()
-
-            for idx, (stdin, expected, is_sample, weight) in enumerate(
-                [("3 4", "7", True, 1), ("10 -2", "8", False, 1)]
-            ):
-                db.add(
-                    TestCase(
-                        coding_problem_id=problem.id,
-                        stdin=stdin,
-                        expected_stdout=expected,
-                        is_sample=is_sample,
-                        weight=weight,
-                        order_index=idx,
-                    )
-                )
-            print("load test exam: coding section added")
-
-        existing_ids = set(
-            (await db.execute(select(Student.student_id))).scalars()
-        )
         created = 0
-        for i in range(1, student_count + 1):
-            sid = f"LT{i:04d}"
-            if sid in existing_ids:
+        for email, name, password in admins:
+            existing = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
+            if existing is not None:
+                print(f"admin already exists, skipping: {email}")
                 continue
-            db.add(
-                Student(
-                    student_id=sid,
-                    name=f"Load Test {i:04d}",
-                    email=f"{sid.lower()}@example.com",
-                    cohort="loadtest",
-                )
-            )
+            db.add(Admin(email=email, name=name, password_hash=hash_password(password)))
             created += 1
-
+            print(f"admin created: {email}")
         await db.commit()
-        print(f"load test students created: {created} (LT0001..LT{student_count:04d})")
+        print(f"{created} admin(s) created")
 
 
-async def _run(students: int, loadtest: bool, loadtest_students: int, loadtest_duration: int) -> None:
-    # Both steps share the module-level async engine, which is bound to whichever
-    # event loop first used it — so they must run inside one asyncio.run(), not two.
+def _admin_spec(raw: str) -> tuple[str, str, str]:
+    # maxsplit=2 so a password containing ':' still comes through intact.
+    parts = raw.split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        raise argparse.ArgumentTypeError(f"--admin must be 'email:name:password', got: {raw!r}")
+    email, name, password = parts
+    return email, name, password
+
+
+async def _run(students: int, admins: list[tuple[str, str, str]] | None) -> None:
+    if admins:
+        await seed_admins(admins)
+        return
     await seed(students)
-    if loadtest:
-        await seed_loadtest(loadtest_students, loadtest_duration)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--students", type=int, default=25)
     parser.add_argument(
-        "--loadtest", action="store_true", help="also seed the LT-prefixed loadtest cohort/exam"
-    )
-    parser.add_argument("--loadtest-students", type=int, default=250)
-    parser.add_argument(
-        "--loadtest-duration", type=int, default=120, help="minutes; must exceed the planned run length"
+        "--admin",
+        action="append",
+        dest="admins",
+        type=_admin_spec,
+        metavar="EMAIL:NAME:PASSWORD",
+        help="create an admin with these exact credentials (repeatable, e.g. pass it 5 times for 5 "
+        "admins). When any --admin is given, ONLY admins are created — the demo exam/students are "
+        "skipped.",
     )
     args = parser.parse_args()
-    asyncio.run(_run(args.students, args.loadtest, args.loadtest_students, args.loadtest_duration))
+    asyncio.run(_run(args.students, args.admins))
