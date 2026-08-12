@@ -677,11 +677,12 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* ----------------------------------------------------------------- exam */
 
-/* Desktop: pin the page to exactly one viewport tall so nothing but the panels
-   below ever scrolls the whole document (see .exam-body/.question-pane/.palette) —
-   the >980px band only, since the mobile layout below still wants normal page
-   scroll once everything stacks into a single column. */
-.exam { height: 100vh; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+/* Pin the page to exactly one viewport tall so nothing but the panels below ever
+   scrolls the whole document (see .exam-body/.question-pane/.palette, and
+   .cw-editor-inner for the coding workspace's own internal fallback). The
+   >980px-only mobile stack-and-scroll exception below is scoped to exclude the
+   coding workspace — see the media query for why. */
+.exam { height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
 
 .exam-bar {
   position: sticky; top: 0; z-index: 30; flex-shrink: 0;
@@ -821,7 +822,11 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .palette-stats span { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; font-weight: 600; }
 
 .palette-section h4 { font-size: 0.76rem; color: var(--muted); margin: 0.85rem 0 0.45rem; text-transform: uppercase; letter-spacing: 0.02em; font-weight: 650; }
-.palette-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.32rem; }
+/* auto-fill/minmax, not a hardcoded column count — the navigator pane is now
+   user-resizable (coding workspace) as well as living at a fixed 300px/250px
+   (plain MCQ/DI layout), so the grid needs to fit whatever width it actually
+   gets rather than assuming one. */
+.palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 0.32rem; }
 .palette-cell {
   aspect-ratio: 1; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); cursor: pointer; font-size: 0.8rem; padding: 0; font-weight: 600;
@@ -838,25 +843,72 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .swatch.answered { background: var(--green-100); border-color: #6ee7b7; }
 .swatch.review { background: var(--amber-100); border-color: #fcd34d; }
 
-/* ---------------------------------------------------------------- coding */
+/* ---------------------------------------------------------------- coding workspace */
 
-/* Fills the full height of .question-fade (itself already viewport-bounded, see
-   above) so both columns below use all available vertical space instead of the
-   old fixed-px/vh caps, which either wasted space or overflowed depending on zoom. */
-.coding { display: flex; align-items: stretch; gap: 0; height: 100%; min-height: 0; }
-.coding-statement {
-  background: var(--surface-sunken); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 1rem; height: 100%; overflow-y: auto;
-  flex-shrink: 0;
-  /* The splitter lets a student drag this up to 640px wide (see Exam.tsx), but a fixed
-     px cap alone still lets it dominate a narrower/zoomed-in viewport and starve the
-     editor pane. Capping by percentage too guarantees the editor keeps a usable share
-     of the row no matter what width was dragged-and-saved at a different zoom level. */
-  max-width: 60%;
+/* The IDE-style 3-pane shell for a coding question (see CodingWorkspace.tsx) —
+   replaces .exam-body for this one question type. A CSS Grid, not flex: fr
+   tracks (set inline from useResizablePanes' percentage state) plus two
+   fixed-px divider tracks means the browser does the "3fr 5fr 2fr" proportional
+   math natively, at any container width or zoom. Each fr track is wrapped in
+   minmax(floorPx, Nfr) (see CodingWorkspace.tsx) so a pane can never be
+   squeezed narrower than its floor — if the three floors plus dividers
+   genuinely don't fit the container, the grid overflows its own row and
+   overflow-x:auto below turns that into a horizontal scrollbar on the
+   workspace itself, rather than any pane clipping or shrinking further.
+   Vertical overflow stays each pane's own responsibility (see .cw-pane-body/
+   .cw-problem-scroll/.cw-editor-inner/.cw-pane.cw-nav) so nothing here needs
+   its own vertical scroll on top of theirs. */
+.coding-workspace {
+  display: grid; height: 100%; min-height: 0; overflow-x: auto; overflow-y: hidden;
+  padding: 1rem 1.25rem; align-items: stretch;
 }
-.samples { margin-top: 1rem; }
-.sample { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem; }
-.sample pre { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.55rem; }
+.coding-workspace > .splitter-horizontal {
+  width: 100%; height: 100%; margin: 0; align-self: stretch;
+}
+
+.cw-pane {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs); height: 100%; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* Only the navigator scrolls as one plain region — the problem and editor
+   panes hand scrolling to their own head/body/foot slots below instead, so
+   this needs a higher-specificity override rather than relying on rule order. */
+.cw-pane.cw-nav { display: block; overflow-y: auto; overflow-x: hidden; padding: 1.1rem; }
+
+/* Problem/testcases pane: a pinned header strip (question meta) and a pinned
+   footer strip (prev/next/mark-for-review) sandwich the scrolling body in
+   between — nothing in this pane ever scrolls the editor pane or the page. */
+.cw-pane-head { flex-shrink: 0; padding: 0.85rem 1rem 0.65rem; border-bottom: 1px solid var(--border); }
+.cw-pane-head .question-head { margin-bottom: 0; }
+.cw-pane-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+/* Compact footer: this strip is pinned real estate the problem pane pays for
+   on every question, so it stays as thin as the buttons need — smaller
+   buttons/gaps here, not a redesign of .nav-row (still shared with the plain
+   MCQ/DI layout, where the roomier default is fine). */
+.cw-pane-foot { flex-shrink: 0; padding: 0.4rem 0.85rem; border-top: 1px solid var(--border); }
+.cw-pane-foot .nav-row { margin-top: 0; gap: 0.4rem; }
+.cw-pane-foot .btn { padding: 0.32rem 0.6rem; font-size: 0.8rem; }
+.cw-pane-foot .nav-hint { display: none; }
+.cw-pane-foot .review-toggle { font-size: 0.78rem; gap: 0.3rem; }
+
+/* The generic (non-SQL) problem body: description/constraints/examples all in
+   one scroll region — there's no second reference panel (like SQL's schema)
+   competing for the same space, so one region is simplest and matches how a
+   student actually reads it top to bottom. */
+.cw-problem-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem; }
+
+/* Editor + results pane: no head/body/foot slots — the toolbar, editor, and
+   results panel are already flex-shrink:0/flex-grow siblings in one column,
+   so each pane type (generic vs SQL) supplies this directly.
+   overflow-y:auto (not hidden) is the scroll-fallback safety net: the editor
+   and results minimums are computed from real measured space (see
+   useVerticalSplit), but at extreme zoom or a very short viewport even their
+   floors plus the toolbar/tab-strip chrome can exceed what .cw-pane has to
+   give. When that happens this column simply becomes scrollable instead of
+   letting the parent's overflow:hidden clip the results panel out of reach —
+   invisible in the normal case, since nothing overflows a box that fits. */
+.cw-editor-inner { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0.85rem 1rem; overflow-y: auto; }
 
 /* -------------------------------------------------------- collapsible sections */
 
@@ -905,7 +957,10 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .sql-warning svg { flex-shrink: 0; margin-top: 0.1rem; }
 
-.sql-table-block { margin-bottom: 0.85rem; }
+.sql-table-block {
+  margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); padding: 0.6rem 0.7rem;
+}
 .sql-table-block:last-child { margin-bottom: 0; }
 .sql-table-name {
   display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left;
@@ -966,17 +1021,74 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .sql-result-table-wrap.compact .sql-result-table td { padding: 0.2rem 0.4rem; }
 .sql-result-caption { padding: 0.35rem 0.1rem 0; }
 
-/* --------------------------------------------------------- sql workspace */
+/* --------------------------------------------------------- sql problem pane */
 
-/* Dedicated student layout for SQL questions — replaces .coding/.coding-statement
-   for this question type (see CodingView.tsx's isSql dispatch to SqlWorkspace). */
-.sql-workspace { display: flex; align-items: stretch; gap: 0; height: 100%; min-height: 0; }
-.sql-workspace-left {
-  background: var(--surface-sunken); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 1rem; height: 100%; overflow-y: auto;
-  flex-shrink: 0; max-width: 60%;
+/* SqlProblemPane's root, filling the coding workspace's .cw-pane-body — split
+   into two independently-scrolling regions so a long description can never
+   push the schema out of view, and scrolling either one never touches the
+   page or the editor: a capped-height top region for description/constraints,
+   and a schema region that flexes to fill the rest of the pane (see
+   .sql-schema-collapsible below). */
+.sql-problem-pane { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.sql-problem-top {
+  flex-shrink: 0; max-height: 40%; overflow-y: auto; padding: 0.85rem 1rem 0.6rem;
 }
-.sql-workspace-main { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; min-height: 0; }
+
+/* The schema reference panel — collapsible like Description/Constraints (so
+   it can be tucked away for more room), but still fills the rest of the pane
+   and keeps its own independent scroll while open: :has() switches it
+   between "flex:1 column with a scrolling body" (expanded) and "just its own
+   header, no reserved space" (collapsed) based on whether Collapsible
+   actually rendered a body, so collapsing it hands that room straight back
+   to the description region above rather than leaving a blank gap. */
+.sql-schema-collapsible {
+  border-top: 1px solid var(--border); margin: 0; padding: 0;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.sql-schema-collapsible:has(.collapsible-body) { flex: 1; }
+.sql-schema-collapsible:not(:has(.collapsible-body)) { flex: 0 0 auto; }
+.sql-schema-collapsible .collapsible-head {
+  flex-shrink: 0; font-weight: 700; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--muted-strong); padding: 0.75rem 1rem 0.5rem;
+}
+.sql-schema-collapsible .collapsible-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 0;
+}
+.sql-schema-empty { padding: 0 1rem 1rem; }
+
+.sql-schema-scroll-wrap { position: relative; flex: 1; min-height: 0; }
+.sql-schema-scroll {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 0 1rem 1rem;
+}
+/* A wider, higher-contrast scrollbar than the app default — this is the one
+   scroll region students will reach for constantly while writing a query, so
+   it needs to be easy to grab, not just technically present. */
+.sql-schema-scroll { scrollbar-width: auto; scrollbar-color: var(--gray-400) transparent; }
+.sql-schema-scroll::-webkit-scrollbar { width: 14px; }
+.sql-schema-scroll::-webkit-scrollbar-track { background: transparent; }
+.sql-schema-scroll::-webkit-scrollbar-thumb {
+  background: var(--gray-400); border-radius: 999px; border: 3px solid var(--surface-sunken);
+}
+.sql-schema-scroll::-webkit-scrollbar-thumb:hover { background: var(--gray-500); }
+
+/* Fade indicators that only appear once there's actually more content in that
+   direction (state computed in SqlWorkspace from scroll position), so a
+   student never has to guess whether the schema panel has more to scroll to. */
+.sql-scroll-shadow {
+  position: absolute; left: 0; right: 14px; height: 28px; pointer-events: none;
+  opacity: 0; transition: opacity 0.15s ease; z-index: 1;
+}
+.sql-scroll-shadow.visible { opacity: 1; }
+/* A tinted gradient (not a same-color-to-transparent fade) so the indicator
+   reads clearly regardless of what's scrolled underneath it — a fade in the
+   panel's own background color was nearly invisible against itself. */
+.sql-scroll-shadow.top {
+  top: 0; background: linear-gradient(to bottom, rgba(15, 23, 42, 0.16), transparent);
+}
+.sql-scroll-shadow.bottom {
+  bottom: 0; background: linear-gradient(to top, rgba(15, 23, 42, 0.18), transparent);
+}
 
 .sql-dialect-badge {
   display: inline-flex; align-items: center; font-size: 0.72rem; font-weight: 650;
@@ -985,8 +1097,13 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 
 /* Same scroll-region role as .bottom-panel in the generic coding view, but with
-   the SQL-specific case-chip row + side-by-side result grids instead of tabs. */
-.sql-results-panel { margin-top: 0.85rem; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; }
+   the SQL-specific case-chip row + side-by-side result grids instead of tabs.
+   flex-grow/flex-basis/min-height all come from inline style (see
+   SqlEditorPane's useVerticalSplit state) — the minimum is computed from real
+   measured space rather than a fixed px number, so it can never by itself
+   force this pane's column to overflow (see .cw-editor-inner above for what
+   happens if it still doesn't fit). */
+.sql-results-panel { margin-top: 0.6rem; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; }
 .sql-case-chip-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .sql-case-chip {
   border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm);
@@ -1006,14 +1123,6 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .sql-error-panel svg { flex-shrink: 0; margin-top: 0.15rem; }
 .sql-error-panel pre { margin: 0; white-space: pre-wrap; font-size: 0.8rem; background: none; border: none; padding: 0; }
 
-@media (max-width: 980px) {
-  .sql-workspace { flex-direction: column; align-items: stretch; height: auto; }
-  .sql-workspace-left { width: 100% !important; flex-basis: auto !important; max-width: 100%; height: auto; max-height: 320px; }
-  .sql-workspace-main { width: 100%; height: auto; }
-  .sql-results-panel { flex: none; overflow: visible; }
-  .sql-result-columns { grid-template-columns: 1fr; }
-}
-
 /* -------------------------------------------------- admin sql question preview */
 
 .modal.xlarge { max-width: 1100px; }
@@ -1030,19 +1139,27 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   .sql-preview-body { grid-template-columns: 1fr; }
 }
 
-.coding-editor { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; min-height: 0; }
 .editor-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; flex-shrink: 0; }
 .editor-bar select { width: auto; }
 .editor-bar .run-target { margin-left: auto; }
-.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; flex-shrink: 0; }
+/* This is the element useVerticalSplit measures (via chromeTopRef) to know how
+   tall the toolbar actually rendered — it can wrap to two lines at narrow
+   widths, so that height is read from the DOM rather than assumed fixed. */
+.cw-bottom-chrome { flex-shrink: 0; }
+/* flex-grow/flex-basis/min-height all come from inline style (see
+   GenericEditorPane/SqlEditorPane's useVerticalSplit state). Monaco's
+   height="100%" needs this box to have a definite computed height, which the
+   base min-height:0 (overriding the flex-item default of auto) guarantees it
+   can shrink down to before the inline min-height floor takes over. */
+.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; min-height: 0; }
 
 /* ---------------------------------------------------------- bottom tab panel */
 
-/* The one scrollable region in the editor column — grows to fill whatever's left
-   under the (user-resizable, see Splitter/paneSizes in CodingView.tsx) editor
-   frame, and scrolls its own content instead of growing the page when a test
-   case's output is long. */
-.bottom-panel { margin-top: 0.85rem; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+/* Same flex-grow-ratio sizing as .editor-frame above — min-height comes from
+   inline style (useVerticalSplit), computed from real available space rather
+   than a fixed px number. See .cw-editor-inner for the scroll fallback that
+   covers the case where even that computed minimum doesn't fit. */
+.bottom-panel { margin-top: 0.6rem; overflow-y: auto; display: flex; flex-direction: column; }
 .target-case-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .target-case {
   display: flex; align-items: center; gap: 0.6rem; text-align: left;
@@ -1066,7 +1183,21 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
   background: var(--border); transform: translateX(-50%);
 }
+/* A short, thicker "grab bar" centered on the thin divider line — the line
+   alone reads as a border, not a handle; this pill is what actually signals
+   "drag me", and it grows/brightens on hover so the affordance is obvious
+   before the user commits to a drag. */
+.splitter-horizontal::before {
+  content: ''; position: absolute; top: 50%; left: 50%; width: 5px; height: 40px;
+  background: var(--gray-400); border-radius: 999px; transform: translate(-50%, -50%);
+  transition: background 0.12s var(--ease), height 0.12s var(--ease);
+}
 .splitter-horizontal:hover::after, .splitter-horizontal:active::after { background: var(--primary); }
+.splitter-horizontal:hover::before, .splitter-horizontal:active::before { background: var(--primary); height: 56px; }
+
+/* The editor/results divider — same grab-bar treatment, rotated. This is the
+   one students drag most (to trade editor space for testcase/output space),
+   so it needs to read as clearly draggable at a glance, not just on hover. */
 .splitter-vertical {
   height: 13px; margin: -3px 0; cursor: row-resize; position: relative; z-index: 1;
 }
@@ -1074,7 +1205,13 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 2px;
   background: var(--border); transform: translateY(-50%);
 }
+.splitter-vertical::before {
+  content: ''; position: absolute; top: 50%; left: 50%; width: 40px; height: 5px;
+  background: var(--gray-400); border-radius: 999px; transform: translate(-50%, -50%);
+  transition: background 0.12s var(--ease), width 0.12s var(--ease);
+}
 .splitter-vertical:hover::after, .splitter-vertical:active::after { background: var(--primary); }
+.splitter-vertical:hover::before, .splitter-vertical:active::before { background: var(--primary); width: 64px; }
 
 .run-output {
   border: 1px solid var(--border);
@@ -1177,34 +1314,22 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
    exactly the band that 110-150% browser zoom lands common laptop screens in. */
 @media (max-width: 1200px) {
   .exam-body { grid-template-columns: minmax(0, 1fr) 250px; }
-  .palette-grid { grid-template-columns: repeat(5, 1fr); }
 }
 
 @media (max-width: 980px) {
-  /* Below this width everything stacks into one column and the page goes back to
-     scrolling normally end-to-end — the fill-the-viewport/scroll-per-panel scheme
-     above is a desktop-only optimization, not something a stacked mobile layout
-     needs or wants. */
-  .exam { height: auto; overflow: visible; }
+  /* This exam platform is desktop/laptop-only (Safe Exam Browser doesn't run on
+     phones, and Monaco isn't usable on one either) — a narrow CSS viewport here
+     almost always means a zoomed-in desktop window, not an actual small device.
+     :not(:has(.coding-workspace)) keeps the plain MCQ/DI layout's page-scroll
+     stack (still a reasonable fallback for that simpler layout) while leaving
+     the coding 3-pane workspace alone entirely below — it keeps its normal
+     desktop grid and its own internal scroll (see .cw-editor-inner) at any
+     width, rather than collapsing into a single stacked column at high zoom. */
+  .exam:not(:has(.coding-workspace)) { height: auto; overflow: visible; }
   .exam-body { grid-template-columns: minmax(0, 1fr); flex: none; overflow: visible; }
   .question-pane { height: auto; min-height: 60vh; overflow: visible; }
   .question-fade { flex: none; overflow: visible; }
   .palette { position: static; max-height: none; height: auto; order: -1; }
-  .palette-grid { grid-template-columns: repeat(10, 1fr); }
-  /* Below this width, dragging a 260-640px-wide statement pane fights the viewport
-     more than it helps — collapse to a single column and drop the resize handles.
-     Desktop's align-items: stretch matches both columns to the row's height; once
-     flex-direction flips to column here, that same property instead matches both
-     to the container's *width*, so the editor fills full-width below a full-width
-     statement pane instead of sitting at its own cramped natural width. Also drop
-     the desktop height: 100% — a column stack should size to its own content. */
-  .coding { flex-direction: column; align-items: stretch; height: auto; }
-  .coding-statement { width: 100% !important; flex-basis: auto !important; max-width: 100%; height: auto; max-height: 320px; }
-  .coding-editor { width: 100%; height: auto; }
-  .bottom-panel { flex: none; overflow: visible; }
-  .splitter-horizontal { display: none; }
-  .case-grid { grid-template-columns: 1fr; }
-  .card-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
