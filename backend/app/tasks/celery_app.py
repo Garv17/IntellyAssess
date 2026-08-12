@@ -6,7 +6,7 @@ celery_app = Celery(
     "exam_platform",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.judge_tasks", "app.tasks.maintenance"],
+    include=["app.tasks.judge_tasks", "app.tasks.maintenance", "app.tasks.mailer_tasks"],
 )
 
 celery_app.conf.update(
@@ -24,6 +24,7 @@ celery_app.conf.update(
     task_routes={
         "judge.*": {"queue": "judge"},
         "maintenance.*": {"queue": "default"},
+        "mailer.*": {"queue": "default"},
     },
     beat_schedule={
         "flush-answer-buffer": {

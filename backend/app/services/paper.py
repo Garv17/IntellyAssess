@@ -118,13 +118,28 @@ def _question_out(
         coding = CodingProblemOut(
             id=problem.id,
             statement_md=problem.statement_md,
+            constraints_md=problem.constraints_md,
             allowed_languages=list(problem.allowed_languages),
             time_limit_ms=problem.time_limit_ms,
             memory_limit_mb=problem.memory_limit_mb,
             starter_code=dict(problem.starter_code or {}),
+            problem_type=problem.problem_type,
+            function_name=problem.function_name,
+            return_type=problem.return_type,
+            parameters=problem.parameters,
+            sql_dialect=problem.sql_dialect,
+            sql_schema_sql=problem.sql_schema_sql,
+            sql_result_columns=problem.sql_result_columns,
             # Only sample cases cross the wire. Hidden cases stay server-side.
             sample_test_cases=[
-                TestCaseOut(id=tc.id, stdin=tc.stdin, expected_stdout=tc.expected_stdout)
+                TestCaseOut(
+                    id=tc.id,
+                    stdin=tc.stdin,
+                    expected_stdout=tc.expected_stdout,
+                    param_values=tc.param_values,
+                    expected_value=tc.expected_value,
+                    explanation=tc.explanation,
+                )
                 for tc in sorted(problem.test_cases, key=lambda t: t.order_index)
                 if tc.is_sample
             ],

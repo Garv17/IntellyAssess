@@ -9,7 +9,11 @@ import { api } from '../api';
  * system clock, suspends the laptop, or throttles the tab still ends up with the
  * server's remaining time.
  */
-export function useExamTimer(initialSeconds: number, onExpire: () => void) {
+export function useExamTimer(
+  initialSeconds: number,
+  onExpire: () => void,
+  onTabSwitch?: () => void,
+) {
   const [seconds, setSeconds] = useState(initialSeconds);
   const expired = useRef(false);
   const focusLosses = useRef(0);
@@ -56,11 +60,14 @@ export function useExamTimer(initialSeconds: number, onExpire: () => void) {
 
   useEffect(() => {
     const onBlur = () => {
-      if (document.visibilityState === 'hidden') focusLosses.current += 1;
+      if (document.visibilityState === 'hidden') {
+        focusLosses.current += 1;
+        onTabSwitch?.();
+      }
     };
     document.addEventListener('visibilitychange', onBlur);
     return () => document.removeEventListener('visibilitychange', onBlur);
-  }, []);
+  }, [onTabSwitch]);
 
   return { seconds, formatted: formatClock(seconds) };
 }

@@ -128,10 +128,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 }
 
 export const api = {
-  studentLogin: (student_id: string, password: string) =>
-    request<TokenPair>('/api/auth/student/login', {
+  requestMagicLink: (email: string) =>
+    request<MagicLinkSent>('/api/auth/student/magic-link/request', {
       method: 'POST',
-      body: { student_id, password },
+      body: { email },
+    }),
+  verifyMagicLink: (token: string) =>
+    request<TokenPair>('/api/auth/student/magic-link/verify', {
+      method: 'POST',
+      body: { token },
     }),
   adminLogin: (email: string, password: string) =>
     request<TokenPair>('/api/auth/admin/login', { method: 'POST', body: { email, password } }),
@@ -147,10 +152,22 @@ export const api = {
     request<SaveAck>('/api/exam/answers', { method: 'PATCH', body: { answers } }),
   heartbeat: (focusLost = false) =>
     request<Heartbeat>(`/api/exam/heartbeat?focus_lost=${focusLost}`, { method: 'POST' }),
-  runCode: (question_id: string, language: string, code_text: string) =>
+  runCode: (
+    question_id: string,
+    language: string,
+    code_text: string,
+    target: { testCaseId?: string; customStdin?: string; customParams?: unknown[] } = {},
+  ) =>
     request<{ run_id: string }>('/api/exam/code/run', {
       method: 'POST',
-      body: { question_id, language, code_text },
+      body: {
+        question_id,
+        language,
+        code_text,
+        test_case_id: target.testCaseId,
+        custom_stdin: target.customStdin,
+        custom_params: target.customParams,
+      },
     }),
   codeRun: (runId: string) => request<CodeRun>(`/api/exam/code/run/${runId}`),
   submit: (auto = false) =>
@@ -163,6 +180,14 @@ export const api = {
     request<Exam>(`/api/admin/exams/${examId}`, { method: 'PATCH', body: payload }),
   deleteExam: (examId: string) =>
     request<void>(`/api/admin/exams/${examId}`, { method: 'DELETE' }),
+  uploadSebConfig: (examId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<{ seb_url: string }>(`/api/admin/exams/${examId}/seb-config`, {
+      method: 'POST',
+      formData: fd,
+    });
+  },
   sections: (examId: string) => request<Section[]>(`/api/admin/exams/${examId}/sections`),
   createSection: (examId: string, payload: unknown) =>
     request<Section>(`/api/admin/exams/${examId}/sections`, { method: 'POST', body: payload }),
@@ -186,6 +211,21 @@ export const api = {
       method: 'PATCH',
       body: payload,
     }),
+  previewBoilerplate: (
+    language: string,
+    functionName: string,
+    returnType: string,
+    parameters: { name: string; type: string }[],
+  ) =>
+    request<{ code: string }>('/api/admin/coding/preview-boilerplate', {
+      method: 'POST',
+      body: { language, function_name: functionName, return_type: returnType, parameters },
+    }),
+  previewSql: (setupSql: string, querySql: string) =>
+    request<{ stdout: string; error: string | null }>('/api/admin/sql/preview', {
+      method: 'POST',
+      body: { setup_sql: setupSql, query_sql: querySql },
+    }),
   updateDiGroup: (groupId: string, payload: unknown) =>
     request<DIGroupDetail>(`/api/admin/di-groups/${groupId}`, { method: 'PATCH', body: payload }),
   deleteQuestion: (questionId: string) =>
@@ -208,20 +248,41 @@ export const api = {
       formData: fd,
     });
   },
+  createStudent: (payload: { student_id: string; name: string; email: string; cohort?: string | null }) =>
+    request<Student>('/api/admin/students', { method: 'POST', body: payload }),
   bulkStudents: (file: File) => {
     const fd = new FormData();
     fd.append('file', file);
     return request<BulkResult>('/api/admin/students/bulk', { method: 'POST', formData: fd });
   },
   students: (cohort?: string) =>
-    request<Student[]>(`/api/admin/students${cohort ? `?cohort=${encodeURIComponent(cohort)}` : ''}`),
+    request<Student[]>(
+      `/api/admin/students?limit=500${cohort ? `&cohort=${encodeURIComponent(cohort)}` : ''}`,
+    ),
   updateStudent: (studentId: string, payload: Partial<Student>) =>
     request<Student>(`/api/admin/students/${studentId}`, { method: 'PATCH', body: payload }),
   deleteStudent: (studentId: string) =>
     request<void>(`/api/admin/students/${studentId}`, { method: 'DELETE' }),
-  resetStudentPassword: (studentId: string) =>
-    request<StudentCredential>(`/api/admin/students/${studentId}/reset-password`, {
+  sendStudentMagicLink: (studentId: string) =>
+    request<MagicLinkSent>(`/api/admin/students/${studentId}/send-magic-link`, {
       method: 'POST',
+    }),
+  sendBulkMagicLinks: (studentIds: string[]) =>
+    request<BulkMagicLinkQueued>('/api/admin/students/magic-link/bulk', {
+      method: 'POST',
+      body: { student_ids: studentIds },
+    }),
+  sendSebInvites: (examId: string, studentIds: string[]) =>
+    request<{ queued: number }>(`/api/admin/exams/${examId}/invites`, {
+      method: 'POST',
+      body: { student_ids: studentIds },
+    }),
+  redeemInvite: (token: string) =>
+    request<InviteRedeem>(`/api/invite/redeem?token=${encodeURIComponent(token)}`),
+  pinLogin: (examId: string, pin: string) =>
+    request<TokenPair>('/api/invite/pin-login', {
+      method: 'POST',
+      body: { exam_id: examId, pin },
     }),
   publish: (examId: string) =>
     request<PublishResult>(`/api/admin/exams/${examId}/publish`, { method: 'POST' }),
@@ -238,6 +299,14 @@ export const api = {
     }
     const qs = params.toString();
     return request<AttemptListPage>(`/api/admin/attempts${qs ? `?${qs}` : ''}`);
+  },
+  attemptsExportUrl: (filters: Omit<AttemptFilters, 'page' | 'page_size'> = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return `/api/admin/attempts/export.xlsx${qs ? `?${qs}` : ''}`;
   },
   attemptOverview: (attemptId: string) =>
     request<AttemptOverview>(`/api/admin/attempts/${attemptId}/overview`),
@@ -282,6 +351,24 @@ export async function downloadResults(examId: string, filename = 'results.xlsx')
   URL.revokeObjectURL(url);
 }
 
+/** Downloads the currently filtered Student Details result set as an Excel file. */
+export async function downloadAttemptsExport(
+  filters: Omit<AttemptFilters, 'page' | 'page_size'> = {},
+  filename = 'attempts_export.xlsx',
+) {
+  const res = await fetch(api.attemptsExportUrl(filters), {
+    headers: { Authorization: `Bearer ${tokens.access}` },
+  });
+  if (!res.ok) throw new ApiError(res.status, 'Export failed');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 // ------------------------------------------------------------------- types
 
 export interface TokenPair {
@@ -304,6 +391,7 @@ export interface ExamSummary {
   ends_at: string | null;
   status: string;
   attempt_status: string | null;
+  requires_seb: boolean;
 }
 export interface AnswerSave {
   question_id: string;
@@ -326,18 +414,33 @@ export interface Option {
   id: string;
   body: string;
 }
+export interface ParamDef {
+  name: string;
+  type: string;
+}
 export interface TestCase {
   id: string;
   stdin: string;
   expected_stdout: string;
+  param_values: unknown[] | null;
+  expected_value: unknown;
+  explanation: string | null;
 }
 export interface CodingProblem {
   id: string;
   statement_md: string;
+  constraints_md: string | null;
   allowed_languages: string[];
   time_limit_ms: number;
   memory_limit_mb: number;
   starter_code: Record<string, string>;
+  problem_type: 'stdio' | 'function';
+  function_name: string | null;
+  return_type: string | null;
+  parameters: ParamDef[] | null;
+  sql_dialect: string | null;
+  sql_schema_sql: string | null;
+  sql_result_columns: string[] | null;
   sample_test_cases: TestCase[];
 }
 export interface DIGroup {
@@ -390,6 +493,9 @@ export interface TestCaseAdmin {
   id: string;
   stdin: string;
   expected_stdout: string;
+  param_values: unknown[] | null;
+  expected_value: unknown;
+  explanation: string | null;
   is_sample: boolean;
   weight: number;
   order_index: number;
@@ -397,10 +503,18 @@ export interface TestCaseAdmin {
 export interface CodingProblemAdmin {
   id: string;
   statement_md: string;
+  constraints_md: string | null;
   allowed_languages: string[];
   time_limit_ms: number;
   memory_limit_mb: number;
   starter_code: Record<string, string>;
+  problem_type: 'stdio' | 'function';
+  function_name: string | null;
+  return_type: string | null;
+  parameters: ParamDef[] | null;
+  sql_dialect: string | null;
+  sql_schema_sql: string | null;
+  sql_result_columns: string[] | null;
   test_cases: TestCaseAdmin[];
 }
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -493,23 +607,32 @@ export interface Exam {
   cohort: string | null;
   pass_percentage: number | null;
   created_at: string;
+  requires_seb: boolean;
+  seb_config_key: string | null;
 }
-export interface StudentCredential {
-  student_id: string;
-  name: string;
-  password: string;
+export interface MagicLinkSent {
+  message: string;
+  dev_token?: string | null;
+}
+export interface BulkMagicLinkQueued {
+  queued: number;
+}
+export interface InviteRedeem {
+  exam_id: string;
+  exam_title: string;
+  pin: string;
+  pin_expires_at: string;
 }
 export interface BulkResult {
   created: number;
   skipped: number;
   errors: string[];
-  credentials: StudentCredential[];
 }
 export interface Student {
   id: string;
   student_id: string;
   name: string;
-  email: string | null;
+  email: string;
   cohort: string | null;
   is_active: boolean;
 }
@@ -700,7 +823,7 @@ export interface QuestionBankPage {
 // ------------------------------------------------------------ activity/stats
 
 export interface ActivityEvent {
-  type: 'started' | 'answered' | 'code_run' | 'focus_loss' | 'submitted' | string;
+  type: 'started' | 'answered' | 'code_run' | 'tab_switch' | 'submitted' | string;
   timestamp: string;
   label: string;
   detail: string | null;

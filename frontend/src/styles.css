@@ -73,8 +73,8 @@
   --shadow-overlay: 0 24px 48px rgba(15, 23, 42, 0.22);
 
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
-  --sidebar-w: 236px;
-  --topbar-h: 60px;
+  --sidebar-w: 254px;
+  --topbar-h: 64px;
 }
 
 /* ================================================================ reset */
@@ -150,9 +150,8 @@ a { color: var(--primary); }
 
 .brand { display: flex; align-items: center; gap: 0.55rem; font-weight: 650; letter-spacing: -0.01em; }
 .brand-mark {
-  width: 28px; height: 28px; border-radius: 8px;
-  background: linear-gradient(135deg, var(--blue-600), var(--violet-600));
-  display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.85rem;
+  width: 28px; height: 28px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
@@ -178,11 +177,11 @@ a { color: var(--primary); }
 .app-sidebar-brand { padding: 0.35rem 0.5rem 1.2rem; }
 .app-nav { display: flex; flex-direction: column; gap: 0.15rem; flex: 1; }
 .app-nav-link {
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.5rem 0.65rem;
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.68rem 0.8rem;
   border-radius: var(--radius-sm);
   color: var(--muted-strong);
-  font-size: 0.87rem;
+  font-size: 0.92rem;
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
@@ -190,10 +189,10 @@ a { color: var(--primary); }
   background: none;
   width: 100%;
   text-align: left;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), transform 0.12s var(--ease);
 }
 .app-nav-link svg { flex-shrink: 0; opacity: 0.85; }
-.app-nav-link:hover { background: var(--gray-100); color: var(--text); }
+.app-nav-link:hover { background: var(--gray-100); color: var(--text); transform: translateX(1px); }
 .app-nav-link.active { background: var(--primary-soft); color: var(--primary-dark); font-weight: 600; }
 .app-nav-link.active svg { opacity: 1; }
 .app-nav-section { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 0.9rem 0.65rem 0.3rem; font-weight: 650; }
@@ -210,8 +209,8 @@ a { color: var(--primary); }
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 20;
 }
-.app-topbar h1 { font-size: 1.05rem; margin: 0; }
-.app-topbar-right { display: flex; align-items: center; gap: 0.75rem; }
+.app-topbar h1 { font-size: 1.1rem; margin: 0; }
+.app-topbar-right { display: flex; align-items: center; gap: 0.85rem; }
 .app-page { padding: 1.75rem; max-width: 1320px; }
 
 .mobile-nav-toggle { display: none; }
@@ -309,6 +308,12 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 .field { display: flex; flex-direction: column; gap: 0.3rem; }
 .field label, label.field-label { font-size: 0.78rem; color: var(--muted-strong); font-weight: 550; }
+.field-label-row { display: flex; align-items: center; justify-content: space-between; }
+.field-label-row .field-label { font-size: 0.78rem; color: var(--muted-strong); font-weight: 550; }
+.markdown-preview {
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem; background: var(--surface-sunken); min-height: 2.5rem;
+}
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
@@ -333,6 +338,7 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .btn.full { width: 100%; margin-top: 0.75rem; }
 .btn.small { padding: 0.32rem 0.6rem; font-size: 0.8rem; }
 .btn.icon { padding: 0.4rem; width: 2.1rem; height: 2.1rem; }
+.btn.trigger-custom { padding: 0.35rem 0.6rem; height: auto; white-space: normal; }
 .btn.ghost { border-color: transparent; background: none; }
 .btn.ghost:hover:not(:disabled) { background: var(--gray-100); }
 .btn.link {
@@ -354,7 +360,14 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .form-actions { display: flex; gap: 0.75rem; align-items: center; margin-top: 1rem; }
 .inline { display: inline-flex !important; align-items: center; gap: 0.35rem; margin-right: 1rem !important; font-weight: 500 !important; }
 .lang-row { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0.5rem 0; }
+.problem-type-toggle { display: flex; gap: 0.5rem; }
+.param-row { display: grid; grid-template-columns: 1fr 140px auto; gap: 0.5rem; align-items: center; margin-bottom: 0.4rem; }
+.boilerplate-preview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
+.boilerplate-preview-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.6rem 0.75rem; background: var(--surface-sunken); overflow: hidden; }
+.boilerplate-preview-card pre { margin: 0.35rem 0 0; font-size: 0.8rem; overflow-x: auto; }
 .case-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.code-textarea { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 0.82rem; }
+.param-input-error { color: var(--danger); font-size: 0.76rem; display: block; margin-top: 0.15rem; }
 .preview img { max-width: 320px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 
 /* --------------------------------------------------------------- banners */
@@ -454,7 +467,13 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* ================================================================= table */
 
-.table-wrap { overflow-x: auto; border-radius: var(--radius-lg); }
+/* overflow-x: auto forces overflow-y to compute as auto too (per spec, you can't
+   have one axis auto and the other visible), which makes this its own scroll
+   container. `position: sticky` on .table th below only has something to stick
+   against because of the max-height + overflow-y here — without a bounded
+   height, "sticky" silently never sticks (the box just grows to fit everything
+   and the *page* scrolls instead, which is the bug this used to have). */
+.table-wrap { overflow-x: auto; overflow-y: auto; max-height: 70vh; border-radius: var(--radius-lg); }
 .table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
 .table th, .table td { text-align: left; padding: 0.7rem 0.85rem; border-bottom: 1px solid var(--border); }
 .table th {
@@ -484,9 +503,20 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .chip:hover { border-color: var(--primary); color: var(--primary); }
 .chip.active { background: var(--gray-900); border-color: var(--gray-900); color: #fff; }
 
+.search-box {
+  display: flex; align-items: center; gap: 0.4rem; padding: 0.38rem 0.7rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-full);
+  background: var(--surface); color: var(--muted); flex: 0 1 300px; min-width: 200px;
+}
+.search-box svg { flex-shrink: 0; }
+.search-box input {
+  border: none; outline: none; background: none; font: inherit; color: var(--text);
+  width: 100%; padding: 0;
+}
+
 /* =================================================================== tabs */
 
-.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.1rem; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.1rem; flex-shrink: 0; }
 .tab {
   padding: 0.55rem 0.95rem; border: none; background: none; cursor: pointer;
   font: inherit; font-weight: 550; color: var(--muted); border-bottom: 2px solid transparent;
@@ -505,16 +535,17 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   position: absolute; right: 0; top: calc(100% + 6px);
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
-  min-width: 190px; padding: 0.35rem; z-index: 60;
+  min-width: 215px; padding: 0.4rem; z-index: 60;
   animation: pop-in 0.12s var(--ease);
 }
 .dropdown-menu.align-left { right: auto; left: 0; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } to { opacity: 1; transform: none; } }
 .dropdown-item {
-  display: flex; align-items: center; gap: 0.55rem; width: 100%;
-  padding: 0.45rem 0.6rem; border-radius: var(--radius-sm);
-  border: none; background: none; font: inherit; font-size: 0.85rem; font-weight: 500;
+  display: flex; align-items: center; gap: 0.6rem; width: 100%;
+  padding: 0.6rem 0.75rem; border-radius: var(--radius-sm);
+  border: none; background: none; font: inherit; font-size: 0.88rem; font-weight: 500;
   color: var(--text); cursor: pointer; text-align: left; text-decoration: none;
+  transition: background 0.12s var(--ease);
 }
 .dropdown-item:hover { background: var(--gray-100); }
 .dropdown-item.danger { color: var(--danger); }
@@ -565,7 +596,25 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .modal-icon.danger { background: var(--red-100); color: var(--danger); }
 .modal-icon.info { background: var(--blue-100); color: var(--primary); }
+.modal-icon.xl { width: 64px; height: 64px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.25rem; }
+
+/* Tab-switch warning: a proctoring alert has to be unmissable, not just another
+   modal — a heavier backdrop, a pulsing icon, and a ring around the card make it
+   read as urgent even to a student glancing back at the screen. */
+.modal-backdrop:has(.tab-warning) { background: rgba(15, 23, 42, 0.72); }
+.modal.tab-warning {
+  max-width: 480px; text-align: center; border: 2px solid var(--danger);
+  box-shadow: 0 0 0 6px var(--red-50), var(--shadow-overlay);
+}
+.modal.tab-warning .modal-icon { margin-inline: auto; }
+.modal.tab-warning h3 { font-size: 1.15rem; }
+.modal.tab-warning .modal-actions { justify-content: center; }
+.modal-icon.pulse { animation: tab-warning-pulse 1.4s ease-in-out infinite; }
+@keyframes tab-warning-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--red-100); }
+  50% { box-shadow: 0 0 0 10px var(--red-100); }
+}
 
 /* ============================================================== skeleton */
 
@@ -628,20 +677,29 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* ----------------------------------------------------------------- exam */
 
-.exam { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+/* Pin the page to exactly one viewport tall so nothing but the panels below ever
+   scrolls the whole document (see .exam-body/.question-pane/.palette, and
+   .cw-editor-inner for the coding workspace's own internal fallback). The
+   >980px-only mobile stack-and-scroll exception below is scoped to exclude the
+   coding workspace — see the media query for why. */
+.exam { height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
 
 .exam-bar {
-  position: sticky; top: 0; z-index: 30;
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  position: sticky; top: 0; z-index: 30; flex-shrink: 0;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1rem;
   padding: 0.7rem 1.5rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   transition: background 0.2s var(--ease);
 }
-.exam-bar-right { display: flex; align-items: center; gap: 1rem; }
-.exam-progress { padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); }
+.exam-bar > div:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.exam-bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; flex-shrink: 0; }
+.exam-progress { padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .exam-progress .progress-track { margin: 0.55rem 0; }
 .exam-progress-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); font-weight: 600; }
+/* The low-time/error banners sit between the progress bar and the body — they
+   must never get squeezed by the body's flex:1 fill below. */
+.exam > .banner { flex-shrink: 0; }
 
 .timer {
   font-variant-numeric: tabular-nums;
@@ -667,18 +725,29 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .save-indicator.offline { color: var(--danger); font-weight: 600; }
 .save-indicator.saved { color: var(--ok); }
 
-.exam-body { display: grid; grid-template-columns: 1fr 300px; gap: 1.25rem; padding: 1.25rem 1.5rem; align-items: start; }
+/* minmax(0, 1fr), not a bare 1fr: a bare 1fr track refuses to shrink a grid item
+   below its content's min-content width ("grid blowout") — with a resizable coding
+   pane inside, that content width can be large, so without the 0-minimum the whole
+   row overflows the viewport horizontally instead of the column ever shrinking.
+   flex:1/min-height:0/overflow:hidden makes this row fill exactly what's left of
+   the viewport under the header/progress bar (see .exam above); align-items:
+   stretch then gives both the question pane and the palette that same full height
+   so each one scrolls internally instead of growing the whole page. */
+.exam-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.25rem; padding: 1.25rem 1.5rem;
+  align-items: stretch; flex: 1; min-height: 0; overflow: hidden;
+}
 
 .question-pane {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.5rem;
-  min-height: 60vh;
   box-shadow: var(--shadow-xs);
+  display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
 }
 
-.question-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+.question-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0; }
 .pill {
   font-size: 0.74rem; padding: 0.22rem 0.6rem; font-weight: 600;
   background: var(--gray-100); border-radius: var(--radius-full); color: var(--muted-strong);
@@ -688,7 +757,9 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 .question-body { font-size: 1.02rem; margin: 0.5rem 0 1.1rem; white-space: pre-wrap; }
 
-.question-fade { animation: q-fade 0.18s var(--ease); }
+/* The one part of .question-pane allowed to scroll — everything above
+   (question-head) and below (nav-row) stays pinned via flex-shrink:0. */
+.question-fade { animation: q-fade 0.18s var(--ease); flex: 1; min-height: 0; overflow-y: auto; }
 @keyframes q-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .options { display: grid; gap: 0.55rem; }
@@ -725,19 +796,23 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .code-block.small { padding: 0.45rem; font-size: 0.78rem; max-width: 220px; }
 
-.nav-row { display: flex; justify-content: space-between; margin-top: 1.5rem; align-items: center; }
+.nav-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem; margin-top: 1.5rem; align-items: center; flex-shrink: 0; }
 .nav-hint { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
+.nav-next-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.nav-next-group .review-toggle { margin-left: 0; }
 
 /* --------------------------------------------------------------- palette */
 
+/* Stretches to match .question-pane's height (both are align-items: stretch grid
+   children of .exam-body) and scrolls internally — no magic-number calc() against
+   the header height, so it stays correct however tall the header/banners are. */
 .palette {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.1rem;
-  position: sticky;
-  top: 5rem;
-  max-height: calc(100vh - 7rem);
+  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   box-shadow: var(--shadow-xs);
 }
@@ -747,7 +822,11 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .palette-stats span { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; font-weight: 600; }
 
 .palette-section h4 { font-size: 0.76rem; color: var(--muted); margin: 0.85rem 0 0.45rem; text-transform: uppercase; letter-spacing: 0.02em; font-weight: 650; }
-.palette-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.32rem; }
+/* auto-fill/minmax, not a hardcoded column count — the navigator pane is now
+   user-resizable (coding workspace) as well as living at a fixed 300px/250px
+   (plain MCQ/DI layout), so the grid needs to fit whatever width it actually
+   gets rather than assuming one. */
+.palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 0.32rem; }
 .palette-cell {
   aspect-ratio: 1; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); cursor: pointer; font-size: 0.8rem; padding: 0; font-weight: 600;
@@ -764,23 +843,378 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .swatch.answered { background: var(--green-100); border-color: #6ee7b7; }
 .swatch.review { background: var(--amber-100); border-color: #fcd34d; }
 
-/* ---------------------------------------------------------------- coding */
+/* ---------------------------------------------------------------- coding workspace */
 
-.coding { display: grid; grid-template-columns: 360px 1fr; gap: 1.1rem; }
-.coding-statement {
-  background: var(--surface-sunken); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 1rem; max-height: 560px; overflow-y: auto;
+/* The IDE-style 3-pane shell for a coding question (see CodingWorkspace.tsx) —
+   replaces .exam-body for this one question type. A CSS Grid, not flex: fr
+   tracks (set inline from useResizablePanes' percentage state) plus two
+   fixed-px divider tracks means the browser does the "3fr 5fr 2fr" proportional
+   math natively, at any container width or zoom. Each fr track is wrapped in
+   minmax(floorPx, Nfr) (see CodingWorkspace.tsx) so a pane can never be
+   squeezed narrower than its floor — if the three floors plus dividers
+   genuinely don't fit the container, the grid overflows its own row and
+   overflow-x:auto below turns that into a horizontal scrollbar on the
+   workspace itself, rather than any pane clipping or shrinking further.
+   Vertical overflow stays each pane's own responsibility (see .cw-pane-body/
+   .cw-problem-scroll/.cw-editor-inner/.cw-pane.cw-nav) so nothing here needs
+   its own vertical scroll on top of theirs. */
+.coding-workspace {
+  display: grid; height: 100%; min-height: 0; overflow-x: auto; overflow-y: hidden;
+  padding: 1rem 1.25rem; align-items: stretch;
 }
-.samples { margin-top: 1rem; }
-.sample { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem; }
-.sample pre { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.55rem; }
+.coding-workspace > .splitter-horizontal {
+  width: 100%; height: 100%; margin: 0; align-self: stretch;
+}
 
-.editor-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.cw-pane {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs); height: 100%; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* Only the navigator scrolls as one plain region — the problem and editor
+   panes hand scrolling to their own head/body/foot slots below instead, so
+   this needs a higher-specificity override rather than relying on rule order. */
+.cw-pane.cw-nav { display: block; overflow-y: auto; overflow-x: hidden; padding: 1.1rem; }
+
+/* Problem/testcases pane: a pinned header strip (question meta) and a pinned
+   footer strip (prev/next/mark-for-review) sandwich the scrolling body in
+   between — nothing in this pane ever scrolls the editor pane or the page. */
+.cw-pane-head { flex-shrink: 0; padding: 0.85rem 1rem 0.65rem; border-bottom: 1px solid var(--border); }
+.cw-pane-head .question-head { margin-bottom: 0; }
+.cw-pane-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+/* Compact footer: this strip is pinned real estate the problem pane pays for
+   on every question, so it stays as thin as the buttons need — smaller
+   buttons/gaps here, not a redesign of .nav-row (still shared with the plain
+   MCQ/DI layout, where the roomier default is fine). */
+.cw-pane-foot { flex-shrink: 0; padding: 0.4rem 0.85rem; border-top: 1px solid var(--border); }
+.cw-pane-foot .nav-row { margin-top: 0; gap: 0.4rem; }
+.cw-pane-foot .btn { padding: 0.32rem 0.6rem; font-size: 0.8rem; }
+.cw-pane-foot .nav-hint { display: none; }
+.cw-pane-foot .review-toggle { font-size: 0.78rem; gap: 0.3rem; }
+
+/* The generic (non-SQL) problem body: description/constraints/examples all in
+   one scroll region — there's no second reference panel (like SQL's schema)
+   competing for the same space, so one region is simplest and matches how a
+   student actually reads it top to bottom. */
+.cw-problem-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem; }
+
+/* Editor + results pane: no head/body/foot slots — the toolbar, editor, and
+   results panel are already flex-shrink:0/flex-grow siblings in one column,
+   so each pane type (generic vs SQL) supplies this directly.
+   overflow-y:auto (not hidden) is the scroll-fallback safety net: the editor
+   and results minimums are computed from real measured space (see
+   useVerticalSplit), but at extreme zoom or a very short viewport even their
+   floors plus the toolbar/tab-strip chrome can exceed what .cw-pane has to
+   give. When that happens this column simply becomes scrollable instead of
+   letting the parent's overflow:hidden clip the results panel out of reach —
+   invisible in the normal case, since nothing overflows a box that fits. */
+.cw-editor-inner { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0.85rem 1rem; overflow-y: auto; }
+
+/* -------------------------------------------------------- collapsible sections */
+
+.collapsible + .collapsible { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+.collapsible-head {
+  display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left;
+  border: none; background: none; padding: 0; font: inherit; font-weight: 650;
+  cursor: pointer; color: var(--text);
+}
+.collapsible-body { margin-top: 0.6rem; }
+
+/* ---------------------------------------------------------------- markdown */
+
+.markdown-body { font-size: 0.9rem; line-height: 1.55; }
+.markdown-body :first-child { margin-top: 0; }
+.markdown-body :last-child { margin-bottom: 0; }
+.markdown-body p, .markdown-body ul, .markdown-body ol { margin: 0.5rem 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.3rem; }
+.markdown-body pre {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.5rem 0.65rem; overflow-x: auto; margin: 0.5rem 0;
+}
+.markdown-body code { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 0.85em; }
+.markdown-body :not(pre) > code { background: var(--surface); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.markdown-body table { border-collapse: collapse; margin: 0.5rem 0; width: 100%; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 0.35rem 0.55rem; text-align: left; }
+.markdown-body img { max-width: 100%; border-radius: 6px; }
+
+/* ------------------------------------------------------------ example cards */
+
+.example-card {
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem; margin-bottom: 0.75rem; background: var(--surface);
+}
+.example-card-title { font-weight: 650; margin-bottom: 0.5rem; }
+.example-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.example-card-grid pre { background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.55rem; }
+.example-card-explanation { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
+
+/* ------------------------------------------------------------- sql preview */
+
+.sql-warning {
+  display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.8rem;
+  color: var(--danger); background: var(--danger-soft); border: 1px solid var(--red-100);
+  border-radius: var(--radius-sm); padding: 0.5rem 0.65rem; margin: 0 0 0.6rem;
+}
+.sql-warning svg { flex-shrink: 0; margin-top: 0.1rem; }
+
+.sql-table-block {
+  margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); padding: 0.6rem 0.7rem;
+}
+.sql-table-block:last-child { margin-bottom: 0; }
+.sql-table-name {
+  display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left;
+  border: none; background: none; padding: 0; cursor: pointer; color: var(--text);
+  font-weight: 650; font-size: 0.85rem; margin-bottom: 0.35rem;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+}
+.sql-table-name .sql-eq { color: var(--muted); font-weight: 500; }
+.sql-table-row-count {
+  font-weight: 500; font-size: 0.72rem; text-transform: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  margin-left: auto;
+}
+.sql-col-name { margin-right: 0.3rem; }
+.sql-key-tag {
+  display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.6rem;
+  font-weight: 700; letter-spacing: 0.02em; border-radius: 4px; padding: 0.05rem 0.3rem;
+  margin-right: 0.3rem; text-transform: none; vertical-align: middle;
+}
+.sql-key-tag.pk { background: var(--amber-100); color: var(--amber-700); }
+.sql-key-tag.fk { background: var(--blue-100); color: var(--primary); }
+.sql-col-type {
+  display: block; font-weight: 500; font-size: 0.66rem; color: var(--muted);
+  text-transform: lowercase; letter-spacing: 0.01em;
+}
+.sql-data-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sql-data-table, .sql-result-table {
+  width: 100%; border-collapse: collapse; font-size: 0.78rem;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+}
+.sql-data-table th, .sql-data-table td,
+.sql-result-table th, .sql-result-table td {
+  text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border); white-space: nowrap;
+}
+.sql-data-table th:last-child, .sql-data-table td:last-child,
+.sql-result-table th:last-child, .sql-result-table td:last-child { border-right: none; }
+.sql-data-table tr:last-child td, .sql-result-table tr:last-child td { border-bottom: none; }
+.sql-data-table th, .sql-result-table th {
+  background: var(--surface-sunken); color: var(--text); font-weight: 650;
+}
+.sql-more-rows { margin-top: 0.3rem; }
+.sql-result-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sql-result-table-wrap { overflow-x: auto; }
+.sql-row-mismatch td { background: var(--red-50); color: var(--red-700); }
+.sql-stderr {
+  background: var(--red-50); border: 1px solid var(--red-100); color: var(--red-700);
+  border-radius: var(--radius-sm); padding: 0.4rem 0.55rem; font-size: 0.78rem;
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+.sql-schema-preview.compact .sql-table-block { margin-bottom: 0.55rem; }
+.sql-schema-preview.compact .sql-data-table,
+.sql-result-table-wrap.compact .sql-result-table { font-size: 0.72rem; }
+.sql-schema-preview.compact .sql-data-table th,
+.sql-schema-preview.compact .sql-data-table td,
+.sql-result-table-wrap.compact .sql-result-table th,
+.sql-result-table-wrap.compact .sql-result-table td { padding: 0.2rem 0.4rem; }
+.sql-result-caption { padding: 0.35rem 0.1rem 0; }
+
+/* --------------------------------------------------------- sql problem pane */
+
+/* SqlProblemPane's root, filling the coding workspace's .cw-pane-body — split
+   into two independently-scrolling regions so a long description can never
+   push the schema out of view, and scrolling either one never touches the
+   page or the editor: a capped-height top region for description/constraints,
+   and a schema region that flexes to fill the rest of the pane (see
+   .sql-schema-collapsible below). */
+.sql-problem-pane { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.sql-problem-top {
+  flex-shrink: 0; max-height: 40%; overflow-y: auto; padding: 0.85rem 1rem 0.6rem;
+}
+
+/* The schema reference panel — collapsible like Description/Constraints (so
+   it can be tucked away for more room), but still fills the rest of the pane
+   and keeps its own independent scroll while open: :has() switches it
+   between "flex:1 column with a scrolling body" (expanded) and "just its own
+   header, no reserved space" (collapsed) based on whether Collapsible
+   actually rendered a body, so collapsing it hands that room straight back
+   to the description region above rather than leaving a blank gap. */
+.sql-schema-collapsible {
+  border-top: 1px solid var(--border); margin: 0; padding: 0;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.sql-schema-collapsible:has(.collapsible-body) { flex: 1; }
+.sql-schema-collapsible:not(:has(.collapsible-body)) { flex: 0 0 auto; }
+.sql-schema-collapsible .collapsible-head {
+  flex-shrink: 0; font-weight: 700; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--muted-strong); padding: 0.75rem 1rem 0.5rem;
+}
+.sql-schema-collapsible .collapsible-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 0;
+}
+.sql-schema-empty { padding: 0 1rem 1rem; }
+
+.sql-schema-scroll-wrap { position: relative; flex: 1; min-height: 0; }
+.sql-schema-scroll {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 0 1rem 1rem;
+}
+/* A wider, higher-contrast scrollbar than the app default — this is the one
+   scroll region students will reach for constantly while writing a query, so
+   it needs to be easy to grab, not just technically present. */
+.sql-schema-scroll { scrollbar-width: auto; scrollbar-color: var(--gray-400) transparent; }
+.sql-schema-scroll::-webkit-scrollbar { width: 14px; }
+.sql-schema-scroll::-webkit-scrollbar-track { background: transparent; }
+.sql-schema-scroll::-webkit-scrollbar-thumb {
+  background: var(--gray-400); border-radius: 999px; border: 3px solid var(--surface-sunken);
+}
+.sql-schema-scroll::-webkit-scrollbar-thumb:hover { background: var(--gray-500); }
+
+/* Fade indicators that only appear once there's actually more content in that
+   direction (state computed in SqlWorkspace from scroll position), so a
+   student never has to guess whether the schema panel has more to scroll to. */
+.sql-scroll-shadow {
+  position: absolute; left: 0; right: 14px; height: 28px; pointer-events: none;
+  opacity: 0; transition: opacity 0.15s ease; z-index: 1;
+}
+.sql-scroll-shadow.visible { opacity: 1; }
+/* A tinted gradient (not a same-color-to-transparent fade) so the indicator
+   reads clearly regardless of what's scrolled underneath it — a fade in the
+   panel's own background color was nearly invisible against itself. */
+.sql-scroll-shadow.top {
+  top: 0; background: linear-gradient(to bottom, rgba(15, 23, 42, 0.16), transparent);
+}
+.sql-scroll-shadow.bottom {
+  bottom: 0; background: linear-gradient(to top, rgba(15, 23, 42, 0.18), transparent);
+}
+
+.sql-dialect-badge {
+  display: inline-flex; align-items: center; font-size: 0.72rem; font-weight: 650;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0.2rem 0.55rem; color: var(--text);
+}
+
+/* Same scroll-region role as .bottom-panel in the generic coding view, but with
+   the SQL-specific case-chip row + side-by-side result grids instead of tabs.
+   flex-grow/flex-basis/min-height all come from inline style (see
+   SqlEditorPane's useVerticalSplit state) — the minimum is computed from real
+   measured space rather than a fixed px number, so it can never by itself
+   force this pane's column to overflow (see .cw-editor-inner above for what
+   happens if it still doesn't fit). */
+.sql-results-panel { margin-top: 0.6rem; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; }
+.sql-case-chip-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.sql-case-chip {
+  border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm);
+  padding: 0.3rem 0.75rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; color: var(--text);
+}
+.sql-case-chip:hover { background: var(--gray-100); }
+.sql-case-chip.active { border-color: var(--primary); color: var(--primary); background: var(--blue-100); }
+
+.sql-result-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; align-items: start; }
+.sql-result-heading { font-size: 0.78rem; font-weight: 650; color: var(--muted-strong); margin-bottom: 0.35rem; }
+
+.sql-error-panel {
+  display: flex; align-items: flex-start; gap: 0.5rem; color: var(--red-700);
+  background: var(--red-50); border: 1px solid var(--red-100); border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+}
+.sql-error-panel svg { flex-shrink: 0; margin-top: 0.15rem; }
+.sql-error-panel pre { margin: 0; white-space: pre-wrap; font-size: 0.8rem; background: none; border: none; padding: 0; }
+
+/* -------------------------------------------------- admin sql question preview */
+
+.modal.xlarge { max-width: 1100px; }
+.sql-preview-modal { padding: 1.1rem 1.25rem; max-height: 85vh; display: flex; flex-direction: column; }
+.sql-preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.sql-preview-header h3 { margin: 0; }
+.sql-preview-body { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; overflow-y: auto; min-height: 0; }
+.sql-preview-left, .sql-preview-right { overflow-y: auto; min-height: 0; }
+.sql-preview-editor {
+  background: #1e1e1e; color: #d4d4d4; border-radius: var(--radius-sm); padding: 0.75rem;
+  font-size: 0.82rem; white-space: pre-wrap; margin: 0.5rem 0;
+}
+@media (max-width: 900px) {
+  .sql-preview-body { grid-template-columns: 1fr; }
+}
+
+.editor-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; flex-shrink: 0; }
 .editor-bar select { width: auto; }
-.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.editor-bar .run-target { margin-left: auto; }
+/* This is the element useVerticalSplit measures (via chromeTopRef) to know how
+   tall the toolbar actually rendered — it can wrap to two lines at narrow
+   widths, so that height is read from the DOM rather than assumed fixed. */
+.cw-bottom-chrome { flex-shrink: 0; }
+/* flex-grow/flex-basis/min-height all come from inline style (see
+   GenericEditorPane/SqlEditorPane's useVerticalSplit state). Monaco's
+   height="100%" needs this box to have a definite computed height, which the
+   base min-height:0 (overriding the flex-item default of auto) guarantees it
+   can shrink down to before the inline min-height floor takes over. */
+.editor-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; min-height: 0; }
+
+/* ---------------------------------------------------------- bottom tab panel */
+
+/* Same flex-grow-ratio sizing as .editor-frame above — min-height comes from
+   inline style (useVerticalSplit), computed from real available space rather
+   than a fixed px number. See .cw-editor-inner for the scroll fallback that
+   covers the case where even that computed minimum doesn't fit. */
+.bottom-panel { margin-top: 0.6rem; overflow-y: auto; display: flex; flex-direction: column; }
+.target-case-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.target-case {
+  display: flex; align-items: center; gap: 0.6rem; text-align: left;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface);
+  padding: 0.5rem 0.7rem; cursor: pointer; font: inherit;
+}
+.target-case:hover { border-color: var(--border-strong); }
+.target-case.active { border-color: var(--primary); box-shadow: 0 0 0 3px var(--blue-100); }
+.target-case-label { font-weight: 650; flex-shrink: 0; }
+.target-case pre { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-strong); }
+.custom-input-panel { display: flex; flex-direction: column; gap: 0.4rem; }
+.custom-input-panel textarea { font-family: ui-monospace, 'SF Mono', Consolas, monospace; }
+.console-panel { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.9rem; background: var(--surface-sunken); }
+
+.splitter { flex-shrink: 0; }
+.splitter-horizontal {
+  width: 13px; margin: 0 -3px; cursor: col-resize; align-self: stretch;
+  position: relative; z-index: 1;
+}
+.splitter-horizontal::after {
+  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  background: var(--border); transform: translateX(-50%);
+}
+/* A short, thicker "grab bar" centered on the thin divider line — the line
+   alone reads as a border, not a handle; this pill is what actually signals
+   "drag me", and it grows/brightens on hover so the affordance is obvious
+   before the user commits to a drag. */
+.splitter-horizontal::before {
+  content: ''; position: absolute; top: 50%; left: 50%; width: 5px; height: 40px;
+  background: var(--gray-400); border-radius: 999px; transform: translate(-50%, -50%);
+  transition: background 0.12s var(--ease), height 0.12s var(--ease);
+}
+.splitter-horizontal:hover::after, .splitter-horizontal:active::after { background: var(--primary); }
+.splitter-horizontal:hover::before, .splitter-horizontal:active::before { background: var(--primary); height: 56px; }
+
+/* The editor/results divider — same grab-bar treatment, rotated. This is the
+   one students drag most (to trade editor space for testcase/output space),
+   so it needs to read as clearly draggable at a glance, not just on hover. */
+.splitter-vertical {
+  height: 13px; margin: -3px 0; cursor: row-resize; position: relative; z-index: 1;
+}
+.splitter-vertical::after {
+  content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 2px;
+  background: var(--border); transform: translateY(-50%);
+}
+.splitter-vertical::before {
+  content: ''; position: absolute; top: 50%; left: 50%; width: 40px; height: 5px;
+  background: var(--gray-400); border-radius: 999px; transform: translate(-50%, -50%);
+  transition: background 0.12s var(--ease), width 0.12s var(--ease);
+}
+.splitter-vertical:hover::after, .splitter-vertical:active::after { background: var(--primary); }
+.splitter-vertical:hover::before, .splitter-vertical:active::before { background: var(--primary); width: 64px; }
 
 .run-output {
-  margin-top: 0.85rem; border: 1px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md); padding: 0.9rem; background: var(--surface-sunken);
 }
 .verdict { font-weight: 650; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.4rem; }
@@ -789,6 +1223,13 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 .case { margin-bottom: 0.5rem; font-size: 0.85rem; }
 .case .ok { color: var(--ok); font-weight: 600; }
 .case .bad { color: var(--danger); font-weight: 600; }
+.verdict-pill {
+  display: inline-flex; align-items: center; font-weight: 650; font-size: 0.8rem;
+  padding: 0.15rem 0.55rem; border-radius: var(--radius-full); border: 1px solid transparent;
+}
+.verdict-pill.ok { color: var(--green-700); background: var(--green-100); border-color: #6ee7b7; }
+.verdict-pill.bad { color: var(--red-700); background: var(--red-100); border-color: var(--red-600); }
+.verdict-pill.warn { color: var(--amber-700); background: var(--amber-100); border-color: #fcd34d; }
 .case-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; margin-top: 0.35rem; }
 .case-detail pre { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.5rem; }
 
@@ -868,17 +1309,30 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 
 /* -------------------------------------------------------------- responsive */
 
+/* Between the full desktop width and the 980px stack point, shrink the palette a
+   little early rather than letting it hold a flat 300px all the way down — this is
+   exactly the band that 110-150% browser zoom lands common laptop screens in. */
+@media (max-width: 1200px) {
+  .exam-body { grid-template-columns: minmax(0, 1fr) 250px; }
+}
+
 @media (max-width: 980px) {
-  .exam-body { grid-template-columns: 1fr; }
-  .palette { position: static; max-height: none; order: -1; }
-  .palette-grid { grid-template-columns: repeat(10, 1fr); }
-  .coding { grid-template-columns: 1fr; }
-  .case-grid { grid-template-columns: 1fr; }
-  .card-grid { grid-template-columns: 1fr; }
+  /* This exam platform is desktop/laptop-only (Safe Exam Browser doesn't run on
+     phones, and Monaco isn't usable on one either) — a narrow CSS viewport here
+     almost always means a zoomed-in desktop window, not an actual small device.
+     :not(:has(.coding-workspace)) keeps the plain MCQ/DI layout's page-scroll
+     stack (still a reasonable fallback for that simpler layout) while leaving
+     the coding 3-pane workspace alone entirely below — it keeps its normal
+     desktop grid and its own internal scroll (see .cw-editor-inner) at any
+     width, rather than collapsing into a single stacked column at high zoom. */
+  .exam:not(:has(.coding-workspace)) { height: auto; overflow: visible; }
+  .exam-body { grid-template-columns: minmax(0, 1fr); flex: none; overflow: visible; }
+  .question-pane { height: auto; min-height: 60vh; overflow: visible; }
+  .question-fade { flex: none; overflow: visible; }
+  .palette { position: static; max-height: none; height: auto; order: -1; }
 }
 
 @media (max-width: 640px) {
-  .exam-bar { flex-wrap: wrap; }
   .table { font-size: 0.8rem; }
   .row-form, .filter-primary, .filter-more { flex-direction: column; align-items: stretch; }
   .app-page { padding: 1rem; }

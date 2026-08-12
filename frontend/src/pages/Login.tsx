@@ -1,11 +1,12 @@
-import { AlertCircle, FileBarChart2, Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, tokens } from '../api';
+import logo from '../assets/logo.png';
 
-export default function Login({ admin = false }: { admin?: boolean }) {
+function AdminLoginForm() {
   const navigate = useNavigate();
-  const [identifier, setIdentifier] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -15,11 +16,9 @@ export default function Login({ admin = false }: { admin?: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      const pair = admin
-        ? await api.adminLogin(identifier, password)
-        : await api.studentLogin(identifier, password);
-      tokens.set(pair.access_token, pair.refresh_token, admin ? 'admin' : 'student');
-      navigate(admin ? '/admin' : '/dashboard', { replace: true });
+      const pair = await api.adminLogin(email, password);
+      tokens.set(pair.access_token, pair.refresh_token, 'admin');
+      navigate('/admin', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -28,60 +27,72 @@ export default function Login({ admin = false }: { admin?: boolean }) {
   };
 
   return (
-    <div className="auth-shell">
-      <form className="card auth-card" onSubmit={submit}>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.9rem' }}>
-          <span className="brand-mark" style={{ width: 40, height: 40, borderRadius: 11 }}>
-            <FileBarChart2 size={20} />
-          </span>
+    <form className="card auth-card" onSubmit={submit}>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.9rem' }}>
+        <img src={logo} alt="IntellyAssess" className="brand-mark" style={{ width: 44, height: 44 }} />
+      </div>
+      <h1 style={{ textAlign: 'center' }}>Administrator sign in</h1>
+      <p className="muted" style={{ textAlign: 'center' }}>Manage exams, students and results.</p>
+
+      <label>
+        Email
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          autoFocus
+          required
+        />
+      </label>
+
+      <label>
+        Password
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+          required
+        />
+      </label>
+
+      {error && (
+        <div className="banner error">
+          <AlertCircle size={16} />
+          <span>{error}</span>
         </div>
-        <h1 style={{ textAlign: 'center' }}>{admin ? 'Administrator sign in' : 'Examination portal'}</h1>
-        <p className="muted" style={{ textAlign: 'center' }}>
-          {admin ? 'Manage exams, students and results.' : 'Sign in with your Enrollment ID.'}
-        </p>
+      )}
 
-        <label>
-          {admin ? 'Email' : 'Enrollment ID'}
-          <input
-            value={identifier}
-            onChange={(e) => setIdentifier(e.target.value)}
-            autoComplete={admin ? 'email' : 'username'}
-            autoFocus
-            required
-          />
-        </label>
+      <button className="btn primary full" disabled={busy}>
+        {busy && <Loader2 size={15} className="spinner" />}
+        {busy ? 'Signing in…' : 'Sign in'}
+      </button>
 
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </label>
+      <p className="muted small">
+        <Link to="/">Student sign in</Link>
+      </p>
+    </form>
+  );
+}
 
-        {error && (
-          <div className="banner error">
-            <AlertCircle size={16} />
-            <span>{error}</span>
-          </div>
-        )}
-
-        <button className="btn primary full" disabled={busy}>
-          {busy && <Loader2 size={15} className="spinner" />}
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-
-        <p className="muted small">
-          {admin ? (
-            <Link to="/">Student sign in</Link>
-          ) : (
-            <Link to="/admin/login">Administrator sign in</Link>
-          )}
-        </p>
-      </form>
+function StudentLoginForm() {
+  return (
+    <div className="card auth-card">
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.9rem' }}>
+        <img src={logo} alt="IntellyAssess" className="brand-mark" style={{ width: 44, height: 44 }} />
+      </div>
+      <h1 style={{ textAlign: 'center' }}>Examination portal</h1>
+      <p className="muted" style={{ textAlign: 'center' }}>
+        Open the sign-in link sent to your registered email to start your exam. Links are issued
+        by your administrator. If you haven't received one, please contact them.
+      </p>
     </div>
+  );
+}
+
+export default function Login({ admin = false }: { admin?: boolean }) {
+  return (
+    <div className="auth-shell">{admin ? <AdminLoginForm /> : <StudentLoginForm />}</div>
   );
 }

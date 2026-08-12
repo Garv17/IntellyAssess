@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -15,7 +16,8 @@ from sqlalchemy import text
 from app import cache
 from app.config import settings
 from app.db import engine
-from app.routers import admin, auth, student
+from app.pubsub import live_update_listener
+from app.routers import admin, auth, invites, student
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +30,10 @@ log = logging.getLogger("exam")
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     log.info("starting %s (%s)", settings.app_name, settings.environment)
+    listener_task = asyncio.create_task(live_update_listener())
     yield
+    listener_task.cancel()
+    await asyncio.gather(listener_task, return_exceptions=True)
     await cache.close_redis()
     await engine.dispose()
 
@@ -73,11 +78,17 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
 
 
 app.include_router(auth.router)
+app.include_router(invites.router)
 app.include_router(student.router)
 app.include_router(admin.router)
 
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+
+
+@app.get("/", tags=["ops"])
+async def root() -> dict[str, str]:
+    return {"app": settings.app_name, "status": "ok", "environment": settings.environment}
 
 
 @app.get("/health", tags=["ops"])

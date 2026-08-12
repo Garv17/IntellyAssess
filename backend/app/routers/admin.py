@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import csv
+import hashlib
 import io
+import secrets
 import statistics
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
+import jwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -17,6 +21,8 @@ from fastapi import (
     Query,
     Response,
     UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
     status,
 )
 from sqlalchemy import and_, delete, func, or_, select
@@ -28,6 +34,9 @@ from app import cache
 from app.config import settings
 from app.db import get_db
 from app.deps import current_admin
+from app.security import decode_token
+from app.services.monitor import build_live_snapshot
+from app.ws_manager import live_connections
 from app.models import (
     Admin,
     Answer,
@@ -37,11 +46,13 @@ from app.models import (
     DIGroup,
     Exam,
     ExamAttempt,
+    ExamInvite,
     ExamStatus,
     JudgeMode,
     JudgeRun,
     JudgeStatus,
     MCQOption,
+    ProblemType,
     Question,
     QuestionType,
     Section,
@@ -55,6 +66,10 @@ from app.schemas import (
     AttemptListItem,
     AttemptListPage,
     AttemptOverview,
+    BoilerplatePreviewOut,
+    BoilerplatePreviewRequest,
+    BulkMagicLinkQueued,
+    BulkMagicLinkRequest,
     BulkResult,
     CodingCaseReview,
     CodingCreate,
@@ -67,8 +82,11 @@ from app.schemas import (
     DiContext,
     ExamCreate,
     ExamOut,
+    InviteCreateRequest,
+    InviteQueued,
     LiveMonitorOut,
     LiveStudentRow,
+    MagicLinkSent,
     MCQCreate,
     MCQUpdate,
     OptionAdminOut,
@@ -85,14 +103,17 @@ from app.schemas import (
     SectionCreate,
     SectionReorderRequest,
     SectionScore,
+    SqlPreviewOut,
+    SqlPreviewRequest,
     StudentCreate,
-    StudentCredential,
     StudentOut,
     StudentUpdate,
     TestCaseAdminOut,
 )
-from app.security import dob_password, generate_password, hash_password, parse_dob
-from app.services import export, paper
+from app.security import create_magic_token
+from app.services import export, harness, paper
+from app.services.email import send_magic_link_email
+from app.tasks.judge_tasks import preview_sql as preview_sql_task
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -256,15 +277,26 @@ def _question_detail(question: Question) -> QuestionDetailOut:
         coding = CodingProblemAdminOut(
             id=problem.id,
             statement_md=problem.statement_md,
+            constraints_md=problem.constraints_md,
             allowed_languages=list(problem.allowed_languages),
             time_limit_ms=problem.time_limit_ms,
             memory_limit_mb=problem.memory_limit_mb,
             starter_code=dict(problem.starter_code or {}),
+            problem_type=problem.problem_type,
+            function_name=problem.function_name,
+            return_type=problem.return_type,
+            parameters=problem.parameters,
+            sql_dialect=problem.sql_dialect,
+            sql_schema_sql=problem.sql_schema_sql,
+            sql_result_columns=problem.sql_result_columns,
             test_cases=[
                 TestCaseAdminOut(
                     id=tc.id,
                     stdin=tc.stdin,
                     expected_stdout=tc.expected_stdout,
+                    param_values=tc.param_values,
+                    expected_value=tc.expected_value,
+                    explanation=tc.explanation,
                     is_sample=tc.is_sample,
                     weight=tc.weight,
                     order_index=tc.order_index,
@@ -525,10 +557,18 @@ async def copy_question(
         new_problem = CodingProblem(
             question_id=new_question.id,
             statement_md=source_problem.statement_md,
+            constraints_md=source_problem.constraints_md,
             allowed_languages=list(source_problem.allowed_languages),
             time_limit_ms=source_problem.time_limit_ms,
             memory_limit_mb=source_problem.memory_limit_mb,
             starter_code=dict(source_problem.starter_code or {}),
+            problem_type=source_problem.problem_type,
+            function_name=source_problem.function_name,
+            return_type=source_problem.return_type,
+            parameters=list(source_problem.parameters) if source_problem.parameters else None,
+            sql_dialect=source_problem.sql_dialect,
+            sql_schema_sql=source_problem.sql_schema_sql,
+            sql_result_columns=list(source_problem.sql_result_columns) if source_problem.sql_result_columns else None,
         )
         db.add(new_problem)
         await db.flush()
@@ -538,6 +578,9 @@ async def copy_question(
                     coding_problem_id=new_problem.id,
                     stdin=tc.stdin,
                     expected_stdout=tc.expected_stdout,
+                    param_values=list(tc.param_values) if tc.param_values else None,
+                    expected_value=tc.expected_value,
+                    explanation=tc.explanation,
                     is_sample=tc.is_sample,
                     weight=tc.weight,
                     order_index=tc.order_index,
@@ -746,6 +789,138 @@ async def upload_image(
     return {"image_url": f"/uploads/{name}", "filename": name}
 
 
+@router.post("/exams/{exam_id}/seb-config", status_code=status.HTTP_201_CREATED)
+async def upload_seb_config(
+    exam_id: uuid.UUID,
+    admin: AdminDep,
+    db: DbDep,
+    file: Annotated[UploadFile, File()],
+) -> dict[str, str]:
+    """Stores the exam's one shared .seb file at the exact path Dashboard.tsx and
+    InviteLanding.tsx already link to (/uploads/seb/<exam_id>.seb) — no more manual
+    `docker compose cp` into the uploads volume. Doesn't touch requires_seb or
+    seb_config_key; those are set via PATCH /exams/{exam_id} same as any other field,
+    since the Config Key has to be copied from the Config Tool by hand regardless."""
+    await _get_exam(db, exam_id)
+    if not (file.filename or "").lower().endswith(".seb"):
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Expected a .seb file")
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"File exceeds {settings.max_upload_mb} MB",
+        )
+
+    target_dir = Path(settings.upload_dir) / "seb"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / f"{exam_id}.seb").write_bytes(data)
+    return {"seb_url": f"/uploads/seb/{exam_id}.seb"}
+
+
+def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
+    """Validates and computes the problem_type-dependent fields shared by create
+    and update. For problem_type="function", starter_code is always derived from
+    the signature here — never taken from the client — so the boilerplate a
+    student sees can never drift from what the generated driver actually expects."""
+    if "sql" in payload.allowed_languages:
+        if not (payload.sql_schema_sql or "").strip():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "SQL questions need a schema/seed data script",
+            )
+        sql_fields = {
+            "sql_dialect": payload.sql_dialect,
+            "sql_schema_sql": payload.sql_schema_sql,
+            "sql_result_columns": payload.sql_result_columns,
+        }
+    else:
+        sql_fields = {"sql_dialect": None, "sql_schema_sql": None, "sql_result_columns": None}
+
+    if payload.problem_type == "function":
+        if not payload.function_name or not payload.return_type or not payload.parameters:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Function-signature problems require a function name, return type, "
+                "and at least one parameter",
+            )
+        unsupported = set(payload.allowed_languages) - harness.SUPPORTED_FUNCTION_LANGUAGES
+        if unsupported:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Function-signature mode doesn't support: {', '.join(sorted(unsupported))}. "
+                f"Choose from: {', '.join(sorted(harness.SUPPORTED_FUNCTION_LANGUAGES))}",
+            )
+        parameters = [p.model_dump() for p in payload.parameters]
+        for tc in payload.test_cases:
+            if tc.param_values is None or len(tc.param_values) != len(parameters):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Every test case needs exactly {len(parameters)} parameter value(s)",
+                )
+            if tc.expected_value is None:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, "Every test case needs an expected output"
+                )
+        starter_code = {
+            lang: harness.generate_boilerplate(
+                lang, payload.function_name, payload.return_type, parameters
+            )
+            for lang in payload.allowed_languages
+        }
+        return {
+            "problem_type": ProblemType.function,
+            "function_name": payload.function_name,
+            "return_type": payload.return_type,
+            "parameters": parameters,
+            "starter_code": starter_code,
+            **sql_fields,
+        }
+
+    return {
+        "problem_type": ProblemType.stdio,
+        "function_name": None,
+        "return_type": None,
+        "parameters": None,
+        "starter_code": payload.starter_code,
+        **sql_fields,
+    }
+
+
+@router.post("/coding/preview-boilerplate", response_model=BoilerplatePreviewOut)
+async def preview_boilerplate(payload: BoilerplatePreviewRequest, admin: AdminDep) -> BoilerplatePreviewOut:
+    """No DB writes — lets the exam builder show exactly what students will see
+    while the admin is still editing the function signature."""
+    if payload.language not in harness.SUPPORTED_FUNCTION_LANGUAGES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Function-signature mode doesn't support: {payload.language}",
+        )
+    code = harness.generate_boilerplate(
+        payload.language,
+        payload.function_name,
+        payload.return_type,
+        [p.model_dump() for p in payload.parameters],
+    )
+    return BoilerplatePreviewOut(code=code)
+
+
+@router.post("/sql/preview", response_model=SqlPreviewOut)
+async def preview_sql(payload: SqlPreviewRequest, admin: AdminDep) -> SqlPreviewOut:
+    """No DB writes — actually runs the reference query against the setup SQL for one
+    test case, so an admin never has to hand-compute a GROUP BY/JOIN result to fill in
+    expected_stdout. Dispatched onto the judge queue (judge.preview_sql) rather than
+    run in this process — only the judge worker container has Docker socket access
+    (see docker-compose.yml); the api container intentionally does not."""
+    try:
+        result = await asyncio.to_thread(
+            preview_sql_task.apply_async(args=[payload.setup_sql, payload.query_sql]).get,
+            timeout=15,
+        )
+    except Exception as exc:
+        return SqlPreviewOut(stdout="", error=f"Judge is temporarily unavailable: {exc}")
+    return SqlPreviewOut(stdout=result["stdout"], error=result["error"])
+
+
 @router.post("/sections/{section_id}/coding", status_code=status.HTTP_201_CREATED)
 async def create_coding_problem(
     section_id: uuid.UUID, payload: CodingCreate, admin: AdminDep, db: DbDep
@@ -763,6 +938,7 @@ async def create_coding_problem(
             status.HTTP_400_BAD_REQUEST,
             "Provide at least one hidden test case; sample-only grading is trivially gamed",
         )
+    coding_fields = _prepare_coding_fields(payload)
 
     question = Question(
         section_id=section_id,
@@ -778,10 +954,11 @@ async def create_coding_problem(
     problem = CodingProblem(
         question_id=question.id,
         statement_md=payload.statement_md,
+        constraints_md=payload.constraints_md,
         allowed_languages=payload.allowed_languages,
         time_limit_ms=payload.time_limit_ms,
         memory_limit_mb=payload.memory_limit_mb,
-        starter_code=payload.starter_code,
+        **coding_fields,
     )
     db.add(problem)
     await db.flush()
@@ -792,6 +969,9 @@ async def create_coding_problem(
                 coding_problem_id=problem.id,
                 stdin=tc.stdin,
                 expected_stdout=tc.expected_stdout,
+                param_values=tc.param_values,
+                expected_value=tc.expected_value,
+                explanation=tc.explanation,
                 is_sample=tc.is_sample,
                 weight=tc.weight,
                 order_index=tc.order_index or idx,
@@ -866,16 +1046,19 @@ async def update_coding(
             status.HTTP_400_BAD_REQUEST,
             "Provide at least one hidden test case; sample-only grading is trivially gamed",
         )
+    coding_fields = _prepare_coding_fields(payload)
 
     question.body_md = payload.body_md
     question.marks = payload.marks
     question.meta = {"tags": payload.tags, "difficulty": payload.difficulty}
 
     problem.statement_md = payload.statement_md
+    problem.constraints_md = payload.constraints_md
     problem.allowed_languages = payload.allowed_languages
     problem.time_limit_ms = payload.time_limit_ms
     problem.memory_limit_mb = payload.memory_limit_mb
-    problem.starter_code = payload.starter_code
+    for field, value in coding_fields.items():
+        setattr(problem, field, value)
 
     await db.execute(delete(TestCase).where(TestCase.coding_problem_id == problem.id))
     for idx, tc in enumerate(payload.test_cases):
@@ -884,6 +1067,9 @@ async def update_coding(
                 coding_problem_id=problem.id,
                 stdin=tc.stdin,
                 expected_stdout=tc.expected_stdout,
+                param_values=tc.param_values,
+                expected_value=tc.expected_value,
+                explanation=tc.explanation,
                 is_sample=tc.is_sample,
                 weight=tc.weight,
                 order_index=tc.order_index or idx,
@@ -956,17 +1142,15 @@ async def delete_question(question_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
 # ---------------------------------------------------------------- students
 
 
-@router.post("/students", response_model=StudentCredential, status_code=status.HTTP_201_CREATED)
+@router.post("/students", response_model=StudentOut, status_code=status.HTTP_201_CREATED)
 async def create_student(
     payload: StudentCreate, admin: AdminDep, db: DbDep
-) -> StudentCredential:
-    password = payload.password or generate_password()
+) -> StudentOut:
     student = Student(
         student_id=payload.student_id,
         name=payload.name,
-        email=payload.email,
+        email=payload.email.lower(),
         cohort=payload.cohort,
-        password_hash=hash_password(password),
     )
     db.add(student)
     try:
@@ -974,9 +1158,10 @@ async def create_student(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Enrollment ID {payload.student_id} already exists"
+            status.HTTP_409_CONFLICT,
+            f"Enrollment ID {payload.student_id} or email {payload.email} already exists",
         ) from None
-    return StudentCredential(student_id=student.student_id, name=student.name, password=password)
+    return StudentOut.model_validate(student)
 
 
 @router.post("/students/bulk", response_model=BulkResult)
@@ -985,61 +1170,45 @@ async def bulk_upload_students(
     db: DbDep,
     file: Annotated[UploadFile, File()],
 ) -> BulkResult:
-    """CSV columns: enrollment_id, name, email (optional), cohort (optional),
-    dob (optional, DD-MM-YYYY), password (optional). `student_id` is still accepted
-    as an alias for `enrollment_id` for older CSVs.
-
-    Password precedence per row: explicit password column, else firstname+DDMMYYYY
-    derived from dob, else a random generated password (if dob is blank or unparseable).
-
-    Generated passwords are returned once, in this response only. They are never
-    recoverable afterwards, so the admin must save the CSV.
-    """
+    """CSV columns: enrollment_id, name, email, cohort (optional). `student_id` is
+    still accepted as an alias for `enrollment_id` for older CSVs. Email is required —
+    it's the magic-link sign-in identity, not just contact info."""
     text = (await file.read()).decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
 
     existing_result = await db.execute(select(Student.student_id))
-    existing = set(existing_result.scalars())
+    existing_ids = set(existing_result.scalars())
+    existing_emails = set((await db.execute(select(Student.email))).scalars())
 
     created, skipped, errors = 0, 0, []
-    credentials: list[StudentCredential] = []
 
     for line_no, row in enumerate(reader, start=2):
         sid = (row.get("enrollment_id") or row.get("student_id") or "").strip()
         name = (row.get("name") or "").strip()
-        if not sid or not name:
+        email = (row.get("email") or "").strip().lower()
+        if not sid or not name or not email:
             skipped += 1
-            errors.append(f"Row {line_no}: enrollment_id and name are required")
+            errors.append(f"Row {line_no}: enrollment_id, name and email are required")
             continue
-        if sid in existing:
+        if sid in existing_ids:
             skipped += 1
             errors.append(f"Row {line_no}: {sid} already exists")
             continue
+        if email in existing_emails:
+            skipped += 1
+            errors.append(f"Row {line_no}: email {email} already exists")
+            continue
 
-        password = (row.get("password") or "").strip()
-        if not password:
-            dob_raw = (row.get("dob") or "").strip()
-            dob = parse_dob(dob_raw) if dob_raw else None
-            if dob is not None:
-                password = dob_password(name, dob)
-            else:
-                if dob_raw:
-                    errors.append(
-                        f"Row {line_no}: unrecognized dob '{dob_raw}' — generated random "
-                        "password instead"
-                    )
-                password = generate_password()
         db.add(
             Student(
                 student_id=sid,
                 name=name,
-                email=(row.get("email") or "").strip() or None,
+                email=email,
                 cohort=(row.get("cohort") or "").strip() or None,
-                password_hash=hash_password(password),
             )
         )
-        existing.add(sid)
-        credentials.append(StudentCredential(student_id=sid, name=name, password=password))
+        existing_ids.add(sid)
+        existing_emails.add(email)
         created += 1
 
     await db.flush()
@@ -1051,9 +1220,7 @@ async def bulk_upload_students(
             meta={"created": created, "skipped": skipped},
         )
     )
-    return BulkResult(
-        created=created, skipped=skipped, errors=errors[:50], credentials=credentials
-    )
+    return BulkResult(created=created, skipped=skipped, errors=errors[:50])
 
 
 @router.get("/students", response_model=list[StudentOut])
@@ -1079,9 +1246,18 @@ async def update_student(
     student_id: uuid.UUID, payload: StudentUpdate, admin: AdminDep, db: DbDep
 ) -> StudentOut:
     student = await _get_student(db, student_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if "email" in updates and updates["email"]:
+        updates["email"] = updates["email"].lower()
+    for field, value in updates.items():
         setattr(student, field, value)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Email {updates.get('email')} already exists"
+        ) from None
     db.add(
         AuditLog(
             actor_type="admin", actor_id=admin.id, action="student_updated", target=str(student_id)
@@ -1109,24 +1285,116 @@ async def delete_student(student_id: uuid.UUID, admin: AdminDep, db: DbDep) -> N
     )
 
 
-@router.post("/students/{student_id}/reset-password", response_model=StudentCredential)
-async def reset_student_password(
+@router.post("/students/{student_id}/send-magic-link", response_model=MagicLinkSent)
+async def send_student_magic_link(
     student_id: uuid.UUID, admin: AdminDep, db: DbDep
-) -> StudentCredential:
-    """Returns the new password once, in this response only — same rule as bulk upload."""
+) -> MagicLinkSent:
+    """Admin-triggered resend — e.g. a student says they never got the email. Bypasses
+    the self-serve cooldown since an admin is already authenticated and vouching for
+    the request."""
     student = await _get_student(db, student_id)
-    password = generate_password()
-    student.password_hash = hash_password(password)
-    await db.flush()
+    token, _ = create_magic_token(str(student.id))
+    link = f"{settings.frontend_base_url}/auth/magic?token={token}"
+    try:
+        await send_magic_link_email(student.email, student.name, link)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not send the email") from exc
     db.add(
         AuditLog(
             actor_type="admin",
             actor_id=admin.id,
-            action="student_password_reset",
+            action="magic_link_admin_resend",
             target=str(student_id),
         )
     )
-    return StudentCredential(student_id=student.student_id, name=student.name, password=password)
+    return MagicLinkSent(message=f"Sign-in link sent to {student.email}")
+
+
+@router.post("/students/magic-link/bulk", response_model=BulkMagicLinkQueued)
+async def bulk_send_magic_links(
+    payload: BulkMagicLinkRequest, admin: AdminDep, db: DbDep
+) -> BulkMagicLinkQueued:
+    """Queues a magic-link send to every given (active) student — e.g. every row
+    currently selected in a cohort-filtered view. Runs on a background queue rather
+    than this request thread; hundreds of recipients would otherwise mean a very
+    slow response (or a timeout)."""
+    result = await db.execute(
+        select(Student.id).where(Student.id.in_(payload.student_ids), Student.is_active.is_(True))
+    )
+    ids = [str(sid) for sid in result.scalars()]
+    if not ids:
+        return BulkMagicLinkQueued(queued=0)
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="magic_link_bulk_send",
+            meta={"count": len(ids)},
+        )
+    )
+
+    from app.tasks.mailer_tasks import send_bulk_magic_links
+
+    send_bulk_magic_links.delay(ids)
+    return BulkMagicLinkQueued(queued=len(ids))
+
+
+@router.post("/exams/{exam_id}/invites", response_model=InviteQueued)
+async def create_exam_invites(
+    exam_id: uuid.UUID, payload: InviteCreateRequest, admin: AdminDep, db: DbDep
+) -> InviteQueued:
+    """One shared Start URL / Config Key serves every invitee of this exam — see
+    SEB_INTEGRATION.md §6. Each student gets their own token (never stored raw);
+    re-inviting a student who already has a row just rotates their token, so an
+    old, possibly-forwarded email link stops working."""
+    exam = await _get_exam(db, exam_id)
+    result = await db.execute(
+        select(Student).where(Student.id.in_(payload.student_ids), Student.is_active.is_(True))
+    )
+    students = list(result.scalars())
+    if not students:
+        return InviteQueued(queued=0)
+
+    existing_result = await db.execute(
+        select(ExamInvite).where(
+            ExamInvite.exam_id == exam_id,
+            ExamInvite.student_id.in_([s.id for s in students]),
+        )
+    )
+    existing_by_student = {inv.student_id: inv for inv in existing_result.scalars()}
+
+    items = []
+    for student in students:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        invite = existing_by_student.get(student.id)
+        if invite is None:
+            db.add(ExamInvite(exam_id=exam_id, student_id=student.id, token_hash=token_hash))
+        else:
+            invite.token_hash = token_hash
+        items.append(
+            {
+                "email": student.email,
+                "name": student.name,
+                "exam_title": exam.title,
+                "token": raw_token,
+            }
+        )
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="seb_invite_bulk_send",
+            meta={"exam_id": str(exam_id), "count": len(items)},
+        )
+    )
+
+    from app.tasks.mailer_tasks import send_bulk_invites
+
+    send_bulk_invites.delay(items)
+    return InviteQueued(queued=len(items))
 
 
 # ----------------------------------------------------------------- publish
@@ -1170,6 +1438,8 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
                     problems.append(f"{label}: needs at least one hidden test case")
                 if not problem.allowed_languages:
                     problems.append(f"{label}: no languages allowed")
+                if "sql" in problem.allowed_languages and not problem.sql_schema_sql:
+                    problems.append(f"{label}: SQL questions need a schema/seed data script")
 
         for group in section.di_groups:
             if not group.questions:
@@ -1237,88 +1507,53 @@ async def close_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> ExamOut:
 
 @router.get("/exams/{exam_id}/live", response_model=LiveMonitorOut)
 async def live_monitor(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> LiveMonitorOut:
-    """Polled every ~5 s by the dashboard. One query per panel, no per-student N+1."""
-    exam = await _get_exam(db, exam_id)
+    """First-paint fetch; subsequent updates arrive over live_monitor_ws below."""
+    return await build_live_snapshot(db, exam_id)
 
-    students_query = select(Student).order_by(Student.student_id)
-    if exam.cohort:
-        students_query = students_query.where(Student.cohort == exam.cohort)
-    students_result = await db.execute(students_query)
-    students = list(students_result.scalars())
 
-    attempts_result = await db.execute(
-        select(ExamAttempt).where(ExamAttempt.exam_id == exam_id)
-    )
-    attempts = {a.student_id: a for a in attempts_result.scalars()}
+@router.websocket("/exams/{exam_id}/live/ws")
+async def live_monitor_ws(websocket: WebSocket, exam_id: uuid.UUID, db: DbDep) -> None:
+    """Push-based replacement for polling `GET .../live`. Browsers can't set a custom
+    Authorization header on a WS handshake, so auth is done manually here from a
+    ?token= query param instead of via Depends(current_admin)."""
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        payload = decode_token(token)
+    except jwt.PyJWTError:
+        await websocket.close(code=4401)
+        return
+    if payload.get("type") != "access" or payload.get("role") != "admin":
+        await websocket.close(code=4401)
+        return
+    if await cache.is_jti_denied(payload.get("jti", "")):
+        await websocket.close(code=4401)
+        return
+    admin = await db.get(Admin, uuid.UUID(payload["sub"]))
+    if admin is None or not admin.is_active:
+        await websocket.close(code=4401)
+        return
+    exam = await db.get(Exam, exam_id)
+    if exam is None:
+        await websocket.close(code=4404)
+        return
 
-    counts_result = await db.execute(
-        select(Answer.attempt_id, func.count(Answer.id))
-        .join(ExamAttempt, Answer.attempt_id == ExamAttempt.id)
-        .where(
-            ExamAttempt.exam_id == exam_id,
-            (Answer.selected_option_id.isnot(None)) | (Answer.code_text.isnot(None)),
-        )
-        .group_by(Answer.attempt_id)
-    )
-    answered = dict(counts_result.all())
-
-    now = datetime.now(UTC)
-    rows: list[LiveStudentRow] = []
-    not_started = in_progress = submitted = 0
-
-    for student in students:
-        attempt = attempts.get(student.id)
-        if attempt is None:
-            not_started += 1
-            rows.append(
-                LiveStudentRow(
-                    student_id=student.student_id,
-                    name=student.name,
-                    attempt_status=None,
-                    started_at=None,
-                    seconds_remaining=None,
-                    answered_count=0,
-                    focus_loss_count=0,
-                    submitted_at=None,
-                )
-            )
-            continue
-
-        if attempt.status is AttemptStatus.in_progress:
-            in_progress += 1
-            deadline = attempt.deadline_at
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=UTC)
-            remaining = max(0, int((deadline - now).total_seconds()))
-        else:
-            submitted += 1
-            remaining = None
-
-        rows.append(
-            LiveStudentRow(
-                attempt_id=attempt.id,
-                student_id=student.student_id,
-                name=student.name,
-                attempt_status=attempt.status,
-                started_at=attempt.started_at,
-                seconds_remaining=remaining,
-                # Buffered answers aren't flushed yet, so this can lag by one flush interval.
-                answered_count=answered.get(attempt.id, 0),
-                focus_loss_count=attempt.focus_loss_count,
-                submitted_at=attempt.submitted_at,
-            )
-        )
-
-    return LiveMonitorOut(
-        exam_id=exam_id,
-        title=exam.title,
-        not_started=not_started,
-        in_progress=in_progress,
-        submitted=submitted,
-        total_students=len(students),
-        server_time=now,
-        rows=rows,
-    )
+    await websocket.accept()
+    await live_connections.connect(str(exam_id), websocket)
+    try:
+        snapshot = await build_live_snapshot(db, exam_id)
+        await websocket.send_json(snapshot.model_dump(mode="json"))
+        while True:
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=25)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_connections.disconnect(str(exam_id), websocket)
 
 
 @router.post("/attempts/{attempt_id}/force-submit", status_code=status.HTTP_200_OK)
@@ -1488,30 +1723,19 @@ def _percentage(attempt: ExamAttempt) -> float | None:
     return round(attempt.total_score / attempt.max_score * 100, 2)
 
 
-@router.get("/attempts", response_model=AttemptListPage)
-async def list_attempts(
-    admin: AdminDep,
-    db: DbDep,
-    search: str | None = None,
-    cohort: str | None = None,
-    exam_id: uuid.UUID | None = None,
-    status_filter: Annotated[
-        Literal["completed", "pending"] | None, Query(alias="status")
-    ] = None,
-    min_score: float | None = None,
-    max_score: float | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
-    sort: Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"] = (
-        "submitted_at"
-    ),
-    order: Literal["asc", "desc"] = "desc",
-    page: int = 1,
-    page_size: int = 25,
-) -> AttemptListPage:
-    """Cross-exam attempt list backing the Student Details dashboard. 'Completed' means
-    any terminal status (submitted/auto_submitted/expired); 'Pending' means still in
-    progress."""
+AttemptSort = Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"]
+
+
+def _attempt_conditions(
+    search: str | None,
+    cohort: str | None,
+    exam_id: uuid.UUID | None,
+    status_filter: Literal["completed", "pending"] | None,
+    min_score: float | None,
+    max_score: float | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> list:
     conditions = []
     if search:
         like = f"%{search}%"
@@ -1534,6 +1758,47 @@ async def list_attempts(
         conditions.append(ExamAttempt.submitted_at >= date_from)
     if date_to is not None:
         conditions.append(ExamAttempt.submitted_at <= date_to)
+    return conditions
+
+
+def _attempt_sort_expr(sort: AttemptSort, order: Literal["asc", "desc"]):
+    sort_columns = {
+        "student_name": Student.name,
+        "exam_title": Exam.title,
+        "score": ExamAttempt.total_score,
+        "percentage": ExamAttempt.total_score / func.nullif(ExamAttempt.max_score, 0),
+        "started_at": ExamAttempt.started_at,
+        "submitted_at": ExamAttempt.submitted_at,
+    }
+    order_expr = sort_columns[sort]
+    return order_expr.desc() if order == "desc" else order_expr.asc()
+
+
+@router.get("/attempts", response_model=AttemptListPage)
+async def list_attempts(
+    admin: AdminDep,
+    db: DbDep,
+    search: str | None = None,
+    cohort: str | None = None,
+    exam_id: uuid.UUID | None = None,
+    status_filter: Annotated[
+        Literal["completed", "pending"] | None, Query(alias="status")
+    ] = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: AttemptSort = "submitted_at",
+    order: Literal["asc", "desc"] = "desc",
+    page: int = 1,
+    page_size: int = 25,
+) -> AttemptListPage:
+    """Cross-exam attempt list backing the Student Details dashboard. 'Completed' means
+    any terminal status (submitted/auto_submitted/expired); 'Pending' means still in
+    progress."""
+    conditions = _attempt_conditions(
+        search, cohort, exam_id, status_filter, min_score, max_score, date_from, date_to
+    )
 
     filtered = (
         select(ExamAttempt, Student, Exam)
@@ -1545,16 +1810,7 @@ async def list_attempts(
 
     total = await db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
 
-    sort_columns = {
-        "student_name": Student.name,
-        "exam_title": Exam.title,
-        "score": ExamAttempt.total_score,
-        "percentage": ExamAttempt.total_score / func.nullif(ExamAttempt.max_score, 0),
-        "started_at": ExamAttempt.started_at,
-        "submitted_at": ExamAttempt.submitted_at,
-    }
-    order_expr = sort_columns[sort]
-    order_expr = order_expr.desc() if order == "desc" else order_expr.asc()
+    order_expr = _attempt_sort_expr(sort, order)
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
@@ -1584,6 +1840,37 @@ async def list_attempts(
     ]
 
     return AttemptListPage(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/attempts/export.xlsx")
+async def export_attempts(
+    admin: AdminDep,
+    db: DbDep,
+    search: str | None = None,
+    cohort: str | None = None,
+    exam_id: uuid.UUID | None = None,
+    status_filter: Annotated[
+        Literal["completed", "pending"] | None, Query(alias="status")
+    ] = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: AttemptSort = "submitted_at",
+    order: Literal["asc", "desc"] = "desc",
+) -> Response:
+    """Exports every attempt matching the same filters as `/attempts`, ignoring
+    pagination — the filtered result set, not just the visible page."""
+    conditions = _attempt_conditions(
+        search, cohort, exam_id, status_filter, min_score, max_score, date_from, date_to
+    )
+    order_expr = _attempt_sort_expr(sort, order)
+    filename, content = await export.build_attempts_workbook(db, conditions, order_expr)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/attempts/{attempt_id}/overview", response_model=AttemptOverview)
@@ -1757,7 +2044,7 @@ async def attempt_questions(
 @router.get("/attempts/{attempt_id}/activity", response_model=ActivityTimeline)
 async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> ActivityTimeline:
     """Chronological trail of what a student did during an attempt, for invigilation
-    review. focus_loss is an aggregate count only — there are no per-event timestamps —
+    review. tab_switch is an aggregate count only — there are no per-event timestamps —
     so it's surfaced as a single synthetic entry, not a real-time series."""
     attempt = await _get_attempt(db, attempt_id)
 
@@ -1795,9 +2082,9 @@ async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
     if attempt.focus_loss_count > 0:
         events.append(
             ActivityEvent(
-                type="focus_loss",
+                type="tab_switch",
                 timestamp=attempt.started_at,
-                label=f"{attempt.focus_loss_count} tab-switch/focus-loss event(s) recorded",
+                label=f"{attempt.focus_loss_count} tab switch event(s) recorded",
                 detail="Aggregate count only — no per-event timestamps are tracked",
             )
         )

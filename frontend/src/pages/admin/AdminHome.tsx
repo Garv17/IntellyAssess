@@ -7,6 +7,7 @@ import {
   GraduationCap,
   KeyRound,
   Layers,
+  Loader2,
   Plus,
   Radio,
   Sparkles,
@@ -24,7 +25,6 @@ import {
   type Exam,
   type OverviewStats,
   type Student,
-  type StudentCredential,
 } from '../../api';
 import AppShell from '../../components/AppShell';
 import { Identity } from '../../components/Avatar';
@@ -48,9 +48,13 @@ export default function AdminHome() {
     duration_minutes: 60,
     cohort: '',
     pass_percentage: '',
+    randomize_questions: true,
+    randomize_options: true,
   });
   const [bulk, setBulk] = useState<BulkResult | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [studentForm, setStudentForm] = useState({ student_id: '', name: '', email: '', cohort: '' });
+  const [addingStudent, setAddingStudent] = useState(false);
 
   const [students, setStudents] = useState<Student[]>([]);
   const [studentsLoading, setStudentsLoading] = useState(true);
@@ -62,7 +66,12 @@ export default function AdminHome() {
     duration_minutes: 60,
     cohort: '',
     pass_percentage: '',
+    randomize_questions: true,
+    randomize_options: true,
+    requires_seb: false,
+    seb_config_key: '',
   });
+  const [sebUploading, setSebUploading] = useState(false);
   const [deletingExam, setDeletingExam] = useState<Exam | null>(null);
   const [deletingExamBusy, setDeletingExamBusy] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -74,7 +83,10 @@ export default function AdminHome() {
   });
   const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
   const [deletingStudentBusy, setDeletingStudentBusy] = useState(false);
-  const [resetPasswordResult, setResetPasswordResult] = useState<StudentCredential | null>(null);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
+  const [sendingBulkLinks, setSendingBulkLinks] = useState(false);
+  const [inviteExamId, setInviteExamId] = useState('');
+  const [sendingInvites, setSendingInvites] = useState(false);
 
   const load = async () => {
     try {
@@ -96,10 +108,54 @@ export default function AdminHome() {
     setStudentsLoading(true);
     try {
       setStudents(await api.students(cohort || undefined));
+      setSelectedStudentIds(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load students');
     } finally {
       setStudentsLoading(false);
+    }
+  };
+
+  const toggleStudentSelected = (id: string) => {
+    setSelectedStudentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllStudents = () => {
+    setSelectedStudentIds((prev) =>
+      prev.size === students.length ? new Set() : new Set(students.map((s) => s.id)),
+    );
+  };
+
+  const sendBulkMagicLinks = async () => {
+    if (selectedStudentIds.size === 0) return;
+    setSendingBulkLinks(true);
+    try {
+      const result = await api.sendBulkMagicLinks([...selectedStudentIds]);
+      toast.success(`Queued sign-in links for ${result.queued} student${result.queued === 1 ? '' : 's'}`);
+      setSelectedStudentIds(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not queue the sign-in links');
+    } finally {
+      setSendingBulkLinks(false);
+    }
+  };
+
+  const sendSebInvites = async () => {
+    if (selectedStudentIds.size === 0 || !inviteExamId) return;
+    setSendingInvites(true);
+    try {
+      const result = await api.sendSebInvites(inviteExamId, [...selectedStudentIds]);
+      toast.success(`Queued SEB invites for ${result.queued} student${result.queued === 1 ? '' : 's'}`);
+      setSelectedStudentIds(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not queue the SEB invites');
+    } finally {
+      setSendingInvites(false);
     }
   };
 
@@ -117,6 +173,10 @@ export default function AdminHome() {
       duration_minutes: exam.duration_minutes,
       cohort: exam.cohort ?? '',
       pass_percentage: exam.pass_percentage != null ? String(exam.pass_percentage) : '',
+      randomize_questions: exam.randomize_questions,
+      randomize_options: exam.randomize_options,
+      requires_seb: exam.requires_seb,
+      seb_config_key: exam.seb_config_key ?? '',
     });
   };
 
@@ -131,12 +191,29 @@ export default function AdminHome() {
         duration_minutes: Number(examEditForm.duration_minutes),
         cohort: examEditForm.cohort || null,
         pass_percentage: examEditForm.pass_percentage ? Number(examEditForm.pass_percentage) : null,
+        randomize_questions: examEditForm.randomize_questions,
+        randomize_options: examEditForm.randomize_options,
+        requires_seb: examEditForm.requires_seb,
+        seb_config_key: examEditForm.seb_config_key || null,
       });
       setEditingExam(null);
       await load();
       toast.success('Exam updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update the exam');
+    }
+  };
+
+  const uploadSebFile = async (file: File) => {
+    if (!editingExam) return;
+    setSebUploading(true);
+    try {
+      await api.uploadSebConfig(editingExam.id, file);
+      toast.success('SEB config file uploaded');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not upload the .seb file');
+    } finally {
+      setSebUploading(false);
     }
   };
 
@@ -173,7 +250,7 @@ export default function AdminHome() {
     try {
       await api.updateStudent(editingStudent.id, {
         name: studentEditForm.name,
-        email: studentEditForm.email || null,
+        email: studentEditForm.email,
         cohort: studentEditForm.cohort || null,
         is_active: studentEditForm.is_active,
       });
@@ -201,12 +278,13 @@ export default function AdminHome() {
     }
   };
 
-  const resetPassword = async (student: Student) => {
+  const sendMagicLink = async (student: Student) => {
     setError(null);
     try {
-      setResetPasswordResult(await api.resetStudentPassword(student.id));
+      const result = await api.sendStudentMagicLink(student.id);
+      toast.success(result.message);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not reset the password');
+      toast.error(err instanceof Error ? err.message : 'Could not send the sign-in link');
     }
   };
 
@@ -221,6 +299,8 @@ export default function AdminHome() {
         duration_minutes: Number(form.duration_minutes),
         cohort: form.cohort || null,
         pass_percentage: form.pass_percentage ? Number(form.pass_percentage) : null,
+        randomize_questions: form.randomize_questions,
+        randomize_options: form.randomize_options,
       });
       navigate(`/admin/exams/${exam.id}`);
     } catch (err) {
@@ -237,6 +317,7 @@ export default function AdminHome() {
       const result = await api.bulkStudents(file);
       setBulk(result);
       toast.success(`Created ${result.created} student${result.created === 1 ? '' : 's'}`);
+      await Promise.all([loadStudents(studentCohortFilter), load()]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Upload failed');
     } finally {
@@ -244,18 +325,24 @@ export default function AdminHome() {
     }
   };
 
-  const downloadCredentials = () => {
-    if (!bulk?.credentials.length) return;
-    const csv = [
-      'enrollment_id,name,password',
-      ...bulk.credentials.map((c) => `${c.student_id},"${c.name}",${c.password}`),
-    ].join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'student-credentials.csv';
-    link.click();
-    URL.revokeObjectURL(url);
+  const addStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddingStudent(true);
+    try {
+      await api.createStudent({
+        student_id: studentForm.student_id,
+        name: studentForm.name,
+        email: studentForm.email,
+        cohort: studentForm.cohort || null,
+      });
+      setStudentForm({ student_id: '', name: '', email: '', cohort: '' });
+      toast.success('Student added');
+      await Promise.all([loadStudents(studentCohortFilter), load()]);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not add student');
+    } finally {
+      setAddingStudent(false);
+    }
   };
 
   return (
@@ -348,9 +435,81 @@ export default function AdminHome() {
                 />
               </label>
             </div>
+            <div className="row-form">
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={form.randomize_questions}
+                  onChange={(e) => setForm({ ...form, randomize_questions: e.target.checked })}
+                />
+                Shuffle question order per student
+              </label>
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={form.randomize_options}
+                  onChange={(e) => setForm({ ...form, randomize_options: e.target.checked })}
+                />
+                Shuffle answer options per student
+              </label>
+            </div>
             <div className="form-actions">
               <button className="btn primary" disabled={creating}>
                 {creating ? 'Creating…' : 'Create & open builder'}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="card compact">
+          <div className="card-header">
+            <h2>
+              <Plus size={16} style={{ verticalAlign: -2, marginRight: 4 }} />
+              Add student
+            </h2>
+          </div>
+          <form className="stack" onSubmit={addStudent}>
+            <div className="row-form">
+              <label>
+                Enrollment ID
+                <input
+                  value={studentForm.student_id}
+                  onChange={(e) => setStudentForm({ ...studentForm, student_id: e.target.value })}
+                  placeholder="e.g. 2026-001"
+                  required
+                />
+              </label>
+              <label className="grow">
+                Name
+                <input
+                  value={studentForm.name}
+                  onChange={(e) => setStudentForm({ ...studentForm, name: e.target.value })}
+                  required
+                />
+              </label>
+            </div>
+            <div className="row-form">
+              <label className="grow">
+                Email
+                <input
+                  type="email"
+                  value={studentForm.email}
+                  onChange={(e) => setStudentForm({ ...studentForm, email: e.target.value })}
+                  required
+                />
+              </label>
+              <label>
+                Cohort
+                <input
+                  value={studentForm.cohort}
+                  onChange={(e) => setStudentForm({ ...studentForm, cohort: e.target.value })}
+                  placeholder="optional"
+                />
+              </label>
+            </div>
+            <div className="form-actions">
+              <button className="btn primary" disabled={addingStudent}>
+                {addingStudent ? 'Adding…' : 'Add student'}
               </button>
             </div>
           </form>
@@ -364,8 +523,8 @@ export default function AdminHome() {
             </h2>
           </div>
           <p className="muted small">
-            CSV columns: <code>enrollment_id, name, email, cohort, dob, password</code>. Leave{' '}
-            <code>password</code> blank to auto-generate. Generated passwords are shown once.
+            CSV columns: <code>enrollment_id, name, email, cohort</code>. Email is required,
+            since students sign in via a link sent to it.
           </p>
           <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex' }}>
             <UploadCloud size={15} />
@@ -385,11 +544,6 @@ export default function AdminHome() {
               <Sparkles size={16} />
               <div>
                 Created {bulk.created}, skipped {bulk.skipped}.{' '}
-                {bulk.credentials.length > 0 && (
-                  <button className="btn link" onClick={downloadCredentials}>
-                    Download credentials CSV
-                  </button>
-                )}
                 {bulk.errors.length > 0 && (
                   <ul className="errors">
                     {bulk.errors.slice(0, 10).map((msg) => (
@@ -503,7 +657,47 @@ export default function AdminHome() {
               Clear
             </button>
           )}
+          {selectedStudentIds.size > 0 && (
+            <>
+              <button
+                className="btn primary"
+                disabled={sendingBulkLinks}
+                onClick={() => void sendBulkMagicLinks()}
+              >
+                {sendingBulkLinks && <Loader2 size={15} className="spinner" />}
+                {sendingBulkLinks
+                  ? 'Sending…'
+                  : `Send login link to ${selectedStudentIds.size} selected`}
+              </button>
+              <label>
+                SEB invite for
+                <select value={inviteExamId} onChange={(e) => setInviteExamId(e.target.value)}>
+                  <option value="">Choose exam…</option>
+                  {exams.map((exam) => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="btn"
+                disabled={sendingInvites || !inviteExamId}
+                onClick={() => void sendSebInvites()}
+              >
+                {sendingInvites && <Loader2 size={15} className="spinner" />}
+                {sendingInvites
+                  ? 'Sending…'
+                  : `Send SEB invite to ${selectedStudentIds.size} selected`}
+              </button>
+            </>
+          )}
         </div>
+        <p className="muted small">
+          Tip: filter by cohort (e.g. one college's batch), select all, then send login links to
+          everyone shown at once. Only exams with "requires SEB" turned on need the invite flow —
+          use the plain login link for everything else.
+        </p>
         {studentsLoading ? (
           <SkeletonTable rows={4} />
         ) : students.length === 0 ? (
@@ -513,6 +707,14 @@ export default function AdminHome() {
             <table className="table">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={students.length > 0 && selectedStudentIds.size === students.length}
+                      onChange={toggleSelectAllStudents}
+                      aria-label="Select all students"
+                    />
+                  </th>
                   <th>Student</th>
                   <th>Enrollment ID</th>
                   <th>Email</th>
@@ -524,6 +726,14 @@ export default function AdminHome() {
               <tbody>
                 {students.map((student) => (
                   <tr key={student.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedStudentIds.has(student.id)}
+                        onChange={() => toggleStudentSelected(student.id)}
+                        aria-label={`Select ${student.name}`}
+                      />
+                    </td>
                     <td>
                       <Identity name={student.name} size="sm" />
                     </td>
@@ -540,8 +750,8 @@ export default function AdminHome() {
                         <DropdownItem icon={<Edit3 size={15} />} onClick={() => openEditStudent(student)}>
                           Edit
                         </DropdownItem>
-                        <DropdownItem icon={<KeyRound size={15} />} onClick={() => void resetPassword(student)}>
-                          Reset password
+                        <DropdownItem icon={<KeyRound size={15} />} onClick={() => void sendMagicLink(student)}>
+                          Send login link
                         </DropdownItem>
                         <DropdownSeparator />
                         <DropdownItem icon={<Trash2 size={15} />} danger onClick={() => setDeletingStudent(student)}>
@@ -609,6 +819,67 @@ export default function AdminHome() {
                     />
                   </label>
                 </div>
+                <div className="row-form">
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.randomize_questions}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, randomize_questions: e.target.checked })
+                      }
+                    />
+                    Shuffle question order per student
+                  </label>
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.randomize_options}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, randomize_options: e.target.checked })
+                      }
+                    />
+                    Shuffle answer options per student
+                  </label>
+                </div>
+                <div className="row-form">
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={examEditForm.requires_seb}
+                      onChange={(e) =>
+                        setExamEditForm({ ...examEditForm, requires_seb: e.target.checked })
+                      }
+                    />
+                    Requires Safe Exam Browser
+                  </label>
+                </div>
+                {examEditForm.requires_seb && (
+                  <div className="row-form">
+                    <label className="grow">
+                      Config Key
+                      <input
+                        value={examEditForm.seb_config_key}
+                        onChange={(e) =>
+                          setExamEditForm({ ...examEditForm, seb_config_key: e.target.value })
+                        }
+                        placeholder="copied from the SEB Config Tool's Exam tab"
+                      />
+                    </label>
+                    <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex' }}>
+                      <UploadCloud size={15} />
+                      {sebUploading ? 'Uploading…' : 'Upload .seb file'}
+                      <input
+                        type="file"
+                        accept=".seb"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) void uploadSebFile(file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn" onClick={() => setEditingExam(null)}>
@@ -629,7 +900,7 @@ export default function AdminHome() {
           description={
             <>
               This will permanently delete <strong>{deletingExam.title}</strong>. Exams with
-              student attempts cannot be deleted — close them instead.
+              student attempts cannot be deleted. Close them instead.
             </>
           }
           confirmLabel="Delete exam"
@@ -664,6 +935,7 @@ export default function AdminHome() {
                     onChange={(e) =>
                       setStudentEditForm({ ...studentEditForm, email: e.target.value })
                     }
+                    required
                   />
                 </label>
                 <label>
@@ -706,7 +978,7 @@ export default function AdminHome() {
           description={
             <>
               This will permanently delete <strong>{deletingStudent.name}</strong> (
-              {deletingStudent.student_id}). Students with exam attempts cannot be deleted — set
+              {deletingStudent.student_id}). Students with exam attempts cannot be deleted. Set
               them inactive instead.
             </>
           }
@@ -717,32 +989,6 @@ export default function AdminHome() {
         />
       )}
 
-      {resetPasswordResult && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal">
-            <div className="modal-icon info">
-              <KeyRound size={20} />
-            </div>
-            <h3>Password reset</h3>
-            <p>
-              New password for <strong>{resetPasswordResult.name}</strong> (
-              {resetPasswordResult.student_id}):
-            </p>
-            <p>
-              <code style={{ fontSize: '1rem' }}>{resetPasswordResult.password}</code>
-            </p>
-            <p className="muted small">
-              This is shown once and cannot be recovered afterwards — share it with the student
-              now.
-            </p>
-            <div className="modal-actions">
-              <button className="btn primary" onClick={() => setResetPasswordResult(null)}>
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </AppShell>
   );
 }

@@ -20,7 +20,10 @@ import { api, type ActivityEvent, type AttemptOverview, type QuestionReview } fr
 import { Identity } from '../../components/Avatar';
 import Badge from '../../components/Badge';
 import { SkeletonCard, SkeletonText } from '../../components/Skeleton';
+import SqlResultGrid from '../../components/SqlResultGrid';
+import SqlSchemaExplorer from '../../components/SqlSchemaExplorer';
 import Tabs from '../../components/Tabs';
+import { parsePipeRows, parseSqlSetup } from '../../lib/sqlPreview';
 
 const STATUS_ICON: Record<QuestionReview['status'], React.ReactNode> = {
   correct: <CheckCircle2 size={16} className="urgent" style={{ color: 'var(--ok)' }} />,
@@ -171,7 +174,7 @@ export default function AttemptDetail() {
                       </dd>
                     </div>
                     <div>
-                      <dt>Focus losses</dt>
+                      <dt>Tab switches</dt>
                       <dd className={overview.focus_loss_count > 5 ? 'urgent' : ''}>
                         {overview.focus_loss_count}
                       </dd>
@@ -261,7 +264,7 @@ export default function AttemptDetail() {
                           className={`timeline-dot ${
                             event.type === 'submitted'
                               ? 'ok'
-                              : event.type === 'focus_loss'
+                              : event.type === 'tab_switch'
                                 ? 'warn'
                                 : event.type === 'started'
                                   ? 'ok'
@@ -376,13 +379,30 @@ function CodingReviewBlock({ coding }: { coding: NonNullable<QuestionReview['cod
                   </td>
                   <td>{c.time_ms ?? '—'}</td>
                   <td>
-                    <pre className="code-block small">{c.stdin ?? '—'}</pre>
+                    {isSql && c.stdin && parseSqlSetup(c.stdin).tables.length > 0 ? (
+                      <SqlSchemaExplorer sql={c.stdin} compact />
+                    ) : (
+                      <pre className="code-block small">{c.stdin ?? '—'}</pre>
+                    )}
                   </td>
                   <td>
-                    <pre className="code-block small">{c.expected ?? '—'}</pre>
+                    {isSql && parsePipeRows(c.expected).length > 0 ? (
+                      <SqlResultGrid text={c.expected} compact />
+                    ) : (
+                      <pre className="code-block small">{c.expected ?? '—'}</pre>
+                    )}
                   </td>
                   <td>
-                    <pre className="code-block small">{c.actual ?? '—'}</pre>
+                    {isSql && parsePipeRows(c.actual).length > 0 ? (
+                      <SqlResultGrid text={c.actual} compareTo={c.expected} compact />
+                    ) : (
+                      <pre className="code-block small">{c.actual ?? '—'}</pre>
+                    )}
+                    {c.stderr && (
+                      <pre className="sql-stderr" style={{ marginTop: '0.4rem' }}>
+                        {c.stderr}
+                      </pre>
+                    )}
                   </td>
                 </tr>
               ))}

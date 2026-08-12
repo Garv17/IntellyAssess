@@ -27,6 +27,11 @@ class LanguageSpec:
     # Compile step is optional; run_cmd executes inside /sandbox with stdin piped in.
     compile_cmd: list[str] | None
     run_cmd: list[str]
+    # SQL only: there's no separate "program" to run against varying input — a test
+    # case's stdin *is* the schema/setup script, and the student's code is the query
+    # to run against it. Both get concatenated into one script per test case instead
+    # of code being compiled once and stdin varying alone.
+    combine_stdin_with_code: bool = False
 
 
 LANGUAGES: dict[str, LanguageSpec] = {
@@ -42,6 +47,12 @@ LANGUAGES: dict[str, LanguageSpec] = {
         compile_cmd=None,
         run_cmd=["node", "main.js"],
     ),
+    "c": LanguageSpec(
+        image="gcc:13",
+        filename="main.c",
+        compile_cmd=["gcc", "-O2", "-std=c17", "-o", "main", "main.c"],
+        run_cmd=["./main"],
+    ),
     "cpp": LanguageSpec(
         image="gcc:13",
         filename="main.cpp",
@@ -54,6 +65,15 @@ LANGUAGES: dict[str, LanguageSpec] = {
         compile_cmd=["javac", "Main.java"],
         run_cmd=["java", "Main"],
     ),
+    "sql": LanguageSpec(
+        # A dedicated sqlite3-CLI image — no server process, fits the same
+        # ephemeral-container-per-run model as everything else here.
+        image="nouchka/sqlite3:latest",
+        filename="main.sql",
+        compile_cmd=None,
+        run_cmd=["sqlite3", "-batch", ":memory:"],
+        combine_stdin_with_code=True,
+    ),
 }
 
 
@@ -64,7 +84,7 @@ class RunResult:
     exit_code: int
     time_ms: int
     timed_out: bool
-    verdict: str  # accepted | wrong_answer | tle | runtime_error | compile_error | internal_error
+    verdict: str  # ok | tle | mle | runtime_error (compile_error/internal_error are reported separately, see execute())
 
 
 MAX_OUTPUT_CHARS = 10_000
@@ -117,14 +137,20 @@ def execute(
         container = client.containers.create(
             spec.image,
             command=["sleep", str(max(30, len(stdin_batch) * (time_limit_ms // 1000 + 2)))],
+            # Some judge images set their own ENTRYPOINT (e.g. the sqlite3 image
+            # defaults to running sqlite3 itself). Clearing it guarantees `command`
+            # above is what actually runs as PID 1, regardless of the base image.
+            entrypoint=[],
             working_dir="/sandbox",
             network_disabled=True,
             network_mode="none",
             read_only=True,
             # /sandbox must be writable for compilation output, but is capped and
             # destroyed with the container. mode=1777 so the non-root user can write.
+            # exec is required here (unlike /tmp) — compiled languages (C/C++) run a
+            # binary straight out of this mount; Docker's tmpfs default is noexec.
             tmpfs={
-                "/sandbox": "rw,size=32m,mode=1777",
+                "/sandbox": "rw,exec,size=32m,mode=1777",
                 "/tmp": "rw,size=16m,mode=1777",
             },
             mem_limit=f"{max(memory_limit_mb, settings.judge_memory_mb)}m",
@@ -160,14 +186,20 @@ def execute(
                 spec.compile_cmd, workdir="/sandbox", demux=True
             )
             if exit_code != 0:
-                _, stderr = output
-                return [], _truncate((stderr or b"").decode(errors="replace")) or "Compilation failed"
+                stdout, stderr = output
+                # Diagnostics normally land on stderr, but fall back to stdout rather
+                # than lose the message if a toolchain logs errors there instead.
+                message = (stderr or b"").decode(errors="replace") or (stdout or b"").decode(
+                    errors="replace"
+                )
+                return [], _truncate(message) or "Compilation failed"
 
         wall_limit = max(1.0, time_limit_ms / 1000)
         results: list[RunResult] = []
 
         for stdin_text in stdin_batch:
             started = time.perf_counter()
+            effective_stdin = f"{stdin_text}\n{code}\n" if spec.combine_stdin_with_code else stdin_text
             # `timeout` inside the container enforces the per-case limit; the container's
             # own sleep command bounds the total session as a second line of defence.
             command = [
@@ -180,16 +212,28 @@ def execute(
                 command,
                 workdir="/sandbox",
                 demux=True,
-                environment={"SANDBOX_STDIN": stdin_text},
+                environment={"SANDBOX_STDIN": effective_stdin},
             )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             stdout_b, stderr_b = output if output else (b"", b"")
             stdout = _truncate((stdout_b or b"").decode(errors="replace"))
             stderr = _truncate((stderr_b or b"").decode(errors="replace"))
 
-            # `timeout -s KILL` reports 137; treat it as TLE rather than a crash.
-            timed_out = exit_code == 137 or elapsed_ms > time_limit_ms * 2
-            verdict = "tle" if timed_out else ("runtime_error" if exit_code != 0 else "ok")
+            # `timeout -s KILL` and the kernel OOM-killer both terminate with SIGKILL
+            # (exit 137), so exit code alone can't tell TLE apart from MLE. `timeout`
+            # only fires once the full wall-clock budget has elapsed; an OOM kill lands
+            # as soon as the process outgrows mem_limit, almost always well before that.
+            # The 0.9x margin is a heuristic, not a guarantee — it's intentionally
+            # conservative so a merely-slow-but-legitimate run doesn't get misread as MLE.
+            if exit_code == 137 and elapsed_ms < wall_limit * 1000 * 0.9:
+                verdict = "mle"
+            elif exit_code == 137 or elapsed_ms > time_limit_ms * 2:
+                verdict = "tle"
+            elif exit_code != 0:
+                verdict = "runtime_error"
+            else:
+                verdict = "ok"
+            timed_out = verdict in ("tle", "mle")
 
             results.append(
                 RunResult(

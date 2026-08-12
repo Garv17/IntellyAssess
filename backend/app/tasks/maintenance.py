@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.cache import ANSWERS, DIRTY
 from app.models import Answer, AttemptStatus, AuditLog, ExamAttempt, MCQOption, Question, QuestionType, Section
-from app.sync_db import session_scope, sync_redis
+from app.sync_db import publish_live_update_sync, session_scope, sync_redis
 from app.tasks.celery_app import celery_app
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ def flush_answers() -> dict[str, int]:
         return {"attempts": 0, "answers": 0}
 
     written = 0
+    exam_ids: set[uuid.UUID] = set()
     with session_scope() as session:
         for attempt_id in attempt_ids:
             try:
@@ -77,10 +78,28 @@ def flush_answers() -> dict[str, int]:
                 if not raw:
                     continue
                 answers = {qid: json.loads(body) for qid, body in raw.items()}
-                written += _upsert(session, uuid.UUID(attempt_id), answers)
+                # A SAVEPOINT per attempt: one bad row (e.g. a stale attempt_id whose
+                # exam_attempts row is gone) must not poison the whole 500-item batch's
+                # transaction and roll back everyone else's answers along with it.
+                with session.begin_nested():
+                    written += _upsert(session, uuid.UUID(attempt_id), answers)
             except Exception:
                 log.exception("flush failed for attempt %s; re-queueing", attempt_id)
                 sync_redis.sadd(DIRTY, attempt_id)
+
+        if written:
+            exam_ids = set(
+                session.execute(
+                    select(ExamAttempt.exam_id).where(
+                        ExamAttempt.id.in_([uuid.UUID(a) for a in attempt_ids])
+                    )
+                ).scalars()
+            )
+
+    # Published after the block above commits, so Live Monitor's rebuild reads
+    # the answer counts this flush just wrote, not a stale pre-commit view.
+    for exam_id in exam_ids:
+        publish_live_update_sync(str(exam_id))
 
     return {"attempts": len(attempt_ids), "answers": written}
 
@@ -142,6 +161,8 @@ def auto_submit_expired() -> dict[str, int]:
     minute 59 still gets a graded submission."""
     now = datetime.now(UTC)
     submitted = 0
+    needs_coding_grade: list[str] = []
+    exam_ids: set[uuid.UUID] = set()
 
     with session_scope() as session:
         expired = session.execute(
@@ -180,11 +201,21 @@ def auto_submit_expired() -> dict[str, int]:
             )
             sync_redis.srem(DIRTY, str(attempt.id))
             submitted += 1
+            exam_ids.add(attempt.exam_id)
 
             if pending:
-                from app.tasks.judge_tasks import grade_attempt_coding
+                needs_coding_grade.append(str(attempt.id))
 
-                grade_attempt_coding.delay(str(attempt.id))
+    for exam_id in exam_ids:
+        publish_live_update_sync(str(exam_id))
+
+    # Dispatched only after the `with` block commits: the judge worker reads
+    # attempts over its own connection, and would otherwise race the commit above.
+    if needs_coding_grade:
+        from app.tasks.judge_tasks import grade_attempt_coding
+
+        for attempt_id in needs_coding_grade:
+            grade_attempt_coding.delay(attempt_id)
 
     if submitted:
         log.info("auto-submitted %s expired attempts", submitted)

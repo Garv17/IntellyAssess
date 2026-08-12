@@ -10,7 +10,7 @@ from datetime import UTC
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Answer, Exam, ExamAttempt, Question, QuestionType, Section, Student
@@ -74,7 +74,7 @@ async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[
         "Started At",
         "Submitted At",
         "Duration (min)",
-        "Focus Losses",
+        "Tab Switches",
         "Grading Complete",
     ]
     ws.append(headers)
@@ -127,3 +127,82 @@ async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[
     wb.save(buffer)
     safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in exam.title).strip()
     return f"{safe_title or 'exam'}_results.xlsx", buffer.getvalue()
+
+
+async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr) -> tuple[str, bytes]:
+    """Cross-exam export backing the Student Details filter bar — mirrors whatever
+    filters produced the on-screen result set, with no pagination limit."""
+    query = (
+        select(ExamAttempt, Student, Exam)
+        .join(Student, ExamAttempt.student_id == Student.id)
+        .join(Exam, ExamAttempt.exam_id == Exam.id)
+    )
+    if conditions:
+        query = query.where(and_(*conditions))
+
+    rows = await db.execute(query.order_by(order_expr.nullslast()))
+    results = rows.all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attempts"
+    headers = [
+        "Student ID",
+        "Name",
+        "Email",
+        "Cohort",
+        "Exam",
+        "Status",
+        "Score",
+        "Max Score",
+        "Percentage",
+        "Started At",
+        "Submitted At",
+        "Duration (min)",
+        "Tab Switches",
+        "Grading Complete",
+    ]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = HEADER_FONT
+
+    for attempt, student, exam in results:
+        score = attempt.total_score
+        max_score = attempt.max_score
+        pct = round(score / max_score * 100, 2) if score is not None and max_score else None
+        duration = None
+        if attempt.submitted_at and attempt.started_at:
+            duration = round(
+                (
+                    attempt.submitted_at.replace(tzinfo=attempt.submitted_at.tzinfo or UTC)
+                    - attempt.started_at.replace(tzinfo=attempt.started_at.tzinfo or UTC)
+                ).total_seconds()
+                / 60,
+                1,
+            )
+        ws.append(
+            [
+                student.student_id,
+                student.name,
+                student.email,
+                student.cohort,
+                exam.title,
+                attempt.status.value,
+                score,
+                max_score,
+                pct,
+                attempt.started_at.replace(tzinfo=None) if attempt.started_at else None,
+                attempt.submitted_at.replace(tzinfo=None) if attempt.submitted_at else None,
+                duration,
+                attempt.focus_loss_count,
+                "Yes" if attempt.grading_complete else "No",
+            ]
+        )
+
+    for idx, header in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = max(12, len(header) + 3)
+    ws.freeze_panes = "A2"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return "attempts_export.xlsx", buffer.getvalue()

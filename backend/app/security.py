@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import secrets
-import string
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import bcrypt
@@ -35,32 +33,6 @@ def verify_password(raw: str, hashed: str) -> bool:
         return False
 
 
-def generate_password(length: int = 10) -> str:
-    """Readable random password for bulk student upload (no look-alike chars)."""
-    alphabet = "".join(c for c in string.ascii_letters + string.digits if c not in "O0lI1")
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-_DOB_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y", "%d/%m/%y")
-
-
-def parse_dob(raw: str) -> date | None:
-    """Parses a CSV dob cell, trying common DD-MM-YYYY / YYYY-MM-DD variants."""
-    raw = raw.strip()
-    for fmt in _DOB_FORMATS:
-        try:
-            return datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def dob_password(name: str, dob: date) -> str:
-    """firstnameDDMMYYYY, e.g. Tanvi + 1999-08-05 -> 'Tanvi05081999'."""
-    first_name = name.strip().split()[0]
-    return f"{first_name}{dob.strftime('%d%m%Y')}"
-
-
 def _encode(payload: dict[str, Any]) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
@@ -86,6 +58,21 @@ def create_access_token(
         payload["attempt_id"] = attempt_id
     if extra:
         payload.update(extra)
+    return _encode(payload), jti
+
+
+def create_magic_token(subject: str) -> tuple[str, str]:
+    """Short-lived, single-use-by-convention token emailed as the sign-in link.
+    One-time use is enforced by the caller denylisting the jti on redemption."""
+    now = datetime.now(UTC)
+    jti = str(uuid.uuid4())
+    payload = {
+        "sub": subject,
+        "type": "magic",
+        "jti": jti,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.magic_link_ttl_minutes),
+    }
     return _encode(payload), jti
 
 

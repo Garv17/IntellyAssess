@@ -3,6 +3,13 @@ a batch of students. Idempotent — safe to re-run.
 
     python -m scripts.seed
     python -m scripts.seed --students 400   # load-test sized cohort
+
+Pass one or more --admin flags to create real admin accounts instead — this
+skips the demo exam/students entirely, so it's the one to use against a
+production database:
+
+    python -m scripts.seed --admin "alice@company.com:Alice:S0meStr0ngPass!" \\
+                            --admin "bob@company.com:Bob:An0therPass!"
 """
 
 from __future__ import annotations
@@ -30,7 +37,6 @@ from app.models import (
 from app.security import hash_password
 
 DEMO_ADMIN = ("admin@example.com", "Admin User", "Admin@123")
-DEMO_STUDENT_PASSWORD = "Student@123"
 
 MCQS = [
     (
@@ -112,7 +118,7 @@ async def seed(student_count: int) -> None:
                 starts_at=datetime.now(UTC) - timedelta(minutes=5),
                 ends_at=datetime.now(UTC) + timedelta(days=7),
                 randomize_questions=True,
-                randomize_options=False,
+                randomize_options=True,
                 cohort="2026",
                 created_by=admin.id,
             )
@@ -224,7 +230,7 @@ async def seed(student_count: int) -> None:
                     "Read two space-separated integers from stdin and print their sum.\n\n"
                     "**Input**\n```\n3 4\n```\n\n**Output**\n```\n7\n```"
                 ),
-                allowed_languages=["python", "cpp", "java", "javascript"],
+                allowed_languages=["python", "javascript", "c", "cpp", "java"],
                 time_limit_ms=2000,
                 memory_limit_mb=128,
                 starter_code={
@@ -232,6 +238,10 @@ async def seed(student_count: int) -> None:
                     "javascript": (
                         "const [a, b] = require('fs').readFileSync(0, 'utf8')"
                         ".trim().split(/\\s+/).map(Number);\nconsole.log(a + b);\n"
+                    ),
+                    "c": (
+                        '#include <stdio.h>\nint main(){long long a,b;scanf("%lld %lld",&a,&b);'
+                        'printf("%lld\\n",a+b);return 0;}\n'
                     ),
                     "cpp": (
                         "#include <iostream>\nint main(){long long a,b;"
@@ -266,13 +276,208 @@ async def seed(student_count: int) -> None:
                     )
                 )
 
+            # SQL runs against a fresh in-memory DB per test case, so unlike the other
+            # languages here, a test case's stdin is schema/setup SQL rather than
+            # program input — see combine_stdin_with_code in services/sandbox.py.
+            sql_question = Question(
+                section_id=code_section.id,
+                type=QuestionType.coding,
+                body_md="Find high scorers",
+                order_index=1,
+            )
+            db.add(sql_question)
+            await db.flush()
+
+            sql_problem = CodingProblem(
+                question_id=sql_question.id,
+                statement_md=(
+                    "### Find High Scorers\n\n"
+                    "You're given a `students(id, name, marks)` table. Write a single "
+                    "`SELECT` query returning the `name` of every student with "
+                    "`marks >= 70`, one per line, ordered alphabetically.\n\n"
+                    "The table already exists when your query runs — don't create it "
+                    "yourself."
+                ),
+                allowed_languages=["sql"],
+                time_limit_ms=2000,
+                memory_limit_mb=128,
+                starter_code={"sql": "SELECT name FROM students WHERE marks >= 70 ORDER BY name;\n"},
+                sql_dialect="sqlite",
+                # Schema only — each case below seeds its own rows via per-case setup,
+                # since the sample and hidden case intentionally use disjoint data.
+                sql_schema_sql="CREATE TABLE students(id INTEGER, name TEXT, marks INTEGER);",
+                sql_result_columns=["name"],
+            )
+            db.add(sql_problem)
+            await db.flush()
+
+            sql_cases = [
+                (
+                    "INSERT INTO students VALUES (1,'Alice',80),(2,'Bob',65),(3,'Carol',90);",
+                    "Alice\nCarol",
+                    True,
+                    1,
+                ),
+                (
+                    "INSERT INTO students VALUES (1,'Dan',72),(2,'Eve',50),(3,'Frank',99),"
+                    "(4,'Grace',70);",
+                    "Dan\nFrank\nGrace",
+                    False,
+                    1,
+                ),
+            ]
+            for idx, (stdin, expected, is_sample, weight) in enumerate(sql_cases):
+                db.add(
+                    TestCase(
+                        coding_problem_id=sql_problem.id,
+                        stdin=stdin,
+                        expected_stdout=expected,
+                        is_sample=is_sample,
+                        weight=weight,
+                        order_index=idx,
+                    )
+                )
+
+            # A second SQL problem: multi-table GROUP BY / HAVING with several
+            # boundary-condition hidden cases (exact-threshold spend, single-category
+            # high spend, duplicate purchases pushing a customer over the line).
+            multi_table_question = Question(
+                section_id=code_section.id,
+                type=QuestionType.coding,
+                body_md="Customers spanning categories with high spend",
+                order_index=2,
+            )
+            db.add(multi_table_question)
+            await db.flush()
+
+            multi_table_problem = CodingProblem(
+                question_id=multi_table_question.id,
+                statement_md=(
+                    "### High-Value Multi-Category Customers\n\n"
+                    "Three tables already exist when your query runs:\n\n"
+                    "```sql\n"
+                    "CREATE TABLE Customers (\n"
+                    "    customer_id INT PRIMARY KEY,\n"
+                    "    customer_name VARCHAR(50)\n"
+                    ");\n\n"
+                    "CREATE TABLE Products (\n"
+                    "    product_id VARCHAR(5) PRIMARY KEY,\n"
+                    "    category VARCHAR(50)\n"
+                    ");\n\n"
+                    "CREATE TABLE Orders (\n"
+                    "    order_id INT PRIMARY KEY,\n"
+                    "    customer_id INT REFERENCES Customers(customer_id),\n"
+                    "    product_id VARCHAR(5) REFERENCES Products(product_id),\n"
+                    "    amount INT\n"
+                    ");\n"
+                    "```\n\n"
+                    "Write a single `SELECT` query returning the `customer_name` of every "
+                    "customer who has purchased products from **at least 2 different "
+                    "categories** AND whose **total spend is more than ₹10,000**.\n\n"
+                    "Don't create the tables yourself — they're already populated."
+                ),
+                allowed_languages=["sql"],
+                time_limit_ms=2000,
+                memory_limit_mb=128,
+                starter_code={
+                    "sql": (
+                        "SELECT c.customer_name\n"
+                        "FROM   Orders o\n"
+                        "JOIN   Customers c ON o.customer_id = c.customer_id\n"
+                        "JOIN   Products  p ON o.product_id  = p.product_id\n"
+                        "GROUP BY c.customer_id, c.customer_name\n"
+                        "HAVING COUNT(DISTINCT p.category) >= 2\n"
+                        "   AND SUM(o.amount) > 10000;\n"
+                    )
+                },
+                sql_dialect="sqlite",
+                # Schema + base data shared by every case below; each hidden case
+                # only adds its own edge-case rows via per-case setup instead of
+                # repeating the full DDL + base data (the old per-test-case model).
+                sql_schema_sql=(
+                    "CREATE TABLE Customers (customer_id INT PRIMARY KEY, customer_name VARCHAR(50));\n"
+                    "CREATE TABLE Products (product_id VARCHAR(5) PRIMARY KEY, category VARCHAR(50));\n"
+                    "CREATE TABLE Orders (order_id INT PRIMARY KEY, "
+                    "customer_id INT REFERENCES Customers(customer_id), "
+                    "product_id VARCHAR(5) REFERENCES Products(product_id), amount INT);\n"
+                    "INSERT INTO Customers (customer_id, customer_name) VALUES "
+                    "(1,'Aarav'),(2,'Bhavna'),(3,'Chetan'),(4,'Divya');\n"
+                    "INSERT INTO Products (product_id, category) VALUES "
+                    "('P1','Electronics'),('P2','Electronics'),('P3','Clothing'),"
+                    "('P4','Grocery'),('P5','Clothing');\n"
+                    "INSERT INTO Orders (order_id, customer_id, product_id, amount) VALUES "
+                    "(1,1,'P1',6000),(2,1,'P3',3000),(3,1,'P4',2000),(4,2,'P1',8000),"
+                    "(5,2,'P2',5000),(6,3,'P1',4000),(7,3,'P3',3000),(8,4,'P2',7000),"
+                    "(9,4,'P5',6000);\n"
+                ),
+                sql_result_columns=["customer_name"],
+            )
+            db.add(multi_table_problem)
+            await db.flush()
+
+            multi_table_cases = [
+                # Base data only -> Aarav (14k/2 cat), Divya (13k/2 cat); Bhavna and
+                # Chetan each stay within a single category or under the spend bar.
+                (
+                    "",
+                    "Aarav\nDivya",
+                    True,
+                    1,
+                ),
+                # Edge case 1: Esha spends exactly 10,000 across 2 categories -> the
+                # strict "> 10000" must exclude her; result is unchanged.
+                (
+                    "INSERT INTO Customers VALUES (5,'Esha');\n"
+                    "INSERT INTO Orders VALUES (10,5,'P1',6000),(11,5,'P3',4000);\n",
+                    "Aarav\nDivya",
+                    False,
+                    1,
+                ),
+                # Edge case 2: Farhan spends 12,001 but in a single category ->
+                # the >=2-categories condition must exclude him.
+                (
+                    "INSERT INTO Customers VALUES (6,'Farhan');\n"
+                    "INSERT INTO Orders VALUES (12,6,'P4',12000);\n",
+                    "Aarav\nDivya",
+                    False,
+                    1,
+                ),
+                # Edge case 3: a duplicate purchase pushes Chetan's total spend over
+                # 10,000 while he already had 2 categories -> he now qualifies.
+                (
+                    "INSERT INTO Orders VALUES (14,3,'P1',4000);\n",
+                    "Aarav\nChetan\nDivya",
+                    False,
+                    2,
+                ),
+                # All edge cases combined.
+                (
+                    "INSERT INTO Customers VALUES (5,'Esha'),(6,'Farhan');\n"
+                    "INSERT INTO Orders VALUES (10,5,'P1',6000),(11,5,'P3',4000),"
+                    "(12,6,'P4',12000),(14,3,'P1',4000);\n",
+                    "Aarav\nChetan\nDivya",
+                    False,
+                    2,
+                ),
+            ]
+            for idx, (stdin, expected, is_sample, weight) in enumerate(multi_table_cases):
+                db.add(
+                    TestCase(
+                        coding_problem_id=multi_table_problem.id,
+                        stdin=stdin,
+                        expected_stdout=expected,
+                        is_sample=is_sample,
+                        weight=weight,
+                        order_index=idx,
+                    )
+                )
+
             print(f"demo exam created: {exam.id}")
 
         # --- Students
         existing_ids = set(
             (await db.execute(select(Student.student_id))).scalars()
         )
-        password_hash = hash_password(DEMO_STUDENT_PASSWORD)  # hash once: bcrypt is slow by design
         created = 0
         for i in range(1, student_count + 1):
             sid = f"STU{i:04d}"
@@ -284,18 +489,64 @@ async def seed(student_count: int) -> None:
                     name=f"Student {i:04d}",
                     email=f"{sid.lower()}@example.com",
                     cohort="2026",
-                    password_hash=password_hash,
                 )
             )
             created += 1
 
         await db.commit()
-        print(f"students created: {created} (password for all: {DEMO_STUDENT_PASSWORD})")
-        print("login as STU0001 / Student@123")
+        print(f"students created: {created}")
+        print("students sign in via magic link sent to their email, e.g. stu0001@example.com")
+
+
+async def seed_admins(admins: list[tuple[str, str, str]]) -> None:
+    """Creates only admin accounts — no demo exam, no demo students. Idempotent
+    by email: an admin that already exists is left untouched (its password is
+    not reset/overwritten by a repeat run)."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionLocal() as db:
+        created = 0
+        for email, name, password in admins:
+            existing = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
+            if existing is not None:
+                print(f"admin already exists, skipping: {email}")
+                continue
+            db.add(Admin(email=email, name=name, password_hash=hash_password(password)))
+            created += 1
+            print(f"admin created: {email}")
+        await db.commit()
+        print(f"{created} admin(s) created")
+
+
+def _admin_spec(raw: str) -> tuple[str, str, str]:
+    # maxsplit=2 so a password containing ':' still comes through intact.
+    parts = raw.split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        raise argparse.ArgumentTypeError(f"--admin must be 'email:name:password', got: {raw!r}")
+    email, name, password = parts
+    return email, name, password
+
+
+async def _run(students: int, admins: list[tuple[str, str, str]] | None) -> None:
+    if admins:
+        await seed_admins(admins)
+        return
+    await seed(students)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--students", type=int, default=25)
+    parser.add_argument(
+        "--admin",
+        action="append",
+        dest="admins",
+        type=_admin_spec,
+        metavar="EMAIL:NAME:PASSWORD",
+        help="create an admin with these exact credentials (repeatable, e.g. pass it 5 times for 5 "
+        "admins). When any --admin is given, ONLY admins are created — the demo exam/students are "
+        "skipped.",
+    )
     args = parser.parse_args()
-    asyncio.run(seed(args.students))
+    asyncio.run(_run(args.students, args.admins))

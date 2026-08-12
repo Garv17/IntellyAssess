@@ -13,7 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import cache
 from app.config import settings
 from app.db import get_db
-from app.deps import active_attempt, current_student, resolve_deadline, writable_attempt
+from app.deps import (
+    active_attempt,
+    attempt_exam,
+    current_student,
+    resolve_deadline,
+    writable_attempt,
+)
 from app.models import (
     Answer,
     AttemptStatus,
@@ -29,6 +35,7 @@ from app.models import (
     QuestionType,
     Section,
     Student,
+    TestCase,
 )
 from app.schemas import (
     AnswerBatchSave,
@@ -48,6 +55,7 @@ from app.schemas import (
 from app.security import create_access_token
 from app.services import answers as answer_service
 from app.services import grading, paper
+from app.seb import verify_seb_request
 
 router = APIRouter(prefix="/api/exam", tags=["student"])
 
@@ -91,6 +99,7 @@ async def available_exams(
             ends_at=exam.ends_at,
             status=exam.status,
             attempt_status=attempt_status.get(exam.id),
+            requires_seb=exam.requires_seb,
         )
         for exam in exams
     ]
@@ -119,6 +128,8 @@ async def start_exam(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Exam window has closed")
     if exam.cohort and exam.cohort != student.cohort:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not enrolled in this exam")
+    if exam.requires_seb:
+        verify_seb_request(request, exam.seb_config_key)
 
     existing = await db.execute(
         select(ExamAttempt).where(
@@ -145,6 +156,7 @@ async def start_exam(
             question_order=paper.build_question_order(exam, seed),
             ip_address=request.client.host if request.client else None,
             user_agent=(request.headers.get("user-agent") or "")[:512],
+            seb_verified=exam.requires_seb,
         )
         db.add(attempt)
         try:
@@ -171,6 +183,7 @@ async def start_exam(
 
     deadline = _aware(attempt.deadline_at)
     await cache.set_deadline(str(attempt.id), deadline, cache.seconds_until(deadline) + 300)
+    await cache.publish_live_update(str(exam_id))
 
     # Re-issue an attempt-bound token so subsequent saves skip the attempt lookup.
     token, _ = create_access_token(str(student.id), "student", attempt_id=str(attempt.id))
@@ -196,7 +209,7 @@ async def start_exam(
 
 @router.get("/state", response_model=ExamStateOut)
 async def exam_state(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ExamStateOut:
     """Everything needed to rebuild the UI after a refresh or device switch."""
@@ -221,7 +234,7 @@ async def exam_state(
 
 @router.get("/questions", response_model=ExamPaperOut)
 async def exam_questions(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ExamPaperOut:
     exam = await paper.load_exam_tree(db, attempt.exam_id)
@@ -264,7 +277,7 @@ async def save_single_answer(
 
 @router.post("/heartbeat", response_model=HeartbeatOut)
 async def heartbeat(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
     focus_lost: bool = False,
 ) -> HeartbeatOut:
@@ -272,6 +285,8 @@ async def heartbeat(
     deadline = await resolve_deadline(attempt)
     if focus_lost:
         attempt.focus_loss_count += 1
+        await db.flush()
+        await cache.publish_live_update(str(attempt.exam_id))
     return HeartbeatOut(
         seconds_remaining=cache.seconds_until(deadline),
         status=attempt.status,
@@ -305,12 +320,31 @@ async def run_code(
             f"Language not allowed. Choose from: {', '.join(problem.allowed_languages)}",
         )
 
+    # A run targets exactly one thing: a specific sample case, or ad-hoc custom
+    # input/params. Neither given falls back to the legacy "run every sample"
+    # behavior. Whether "custom" means custom_stdin or custom_params is decided by
+    # the judge worker from problem.problem_type — this endpoint doesn't need to
+    # know which judge mode a problem uses.
+    mode = JudgeMode.sample
+    test_case_id: uuid.UUID | None = None
+    if payload.custom_stdin is not None or payload.custom_params is not None:
+        mode = JudgeMode.custom
+    elif payload.test_case_id is not None:
+        case = await db.get(TestCase, payload.test_case_id)
+        if case is None or case.coding_problem_id != problem.id or not case.is_sample:
+            # A hidden case's id must never be runnable through this endpoint.
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Test case not found")
+        test_case_id = case.id
+
     run = JudgeRun(
         attempt_id=attempt.id,
         question_id=payload.question_id,
         language=payload.language,
         code_text=payload.code_text,
-        mode=JudgeMode.sample,
+        mode=mode,
+        test_case_id=test_case_id,
+        custom_stdin=payload.custom_stdin,
+        custom_params=payload.custom_params,
         status=JudgeStatus.queued,
     )
     db.add(run)
@@ -328,6 +362,12 @@ async def run_code(
             }
         },
     )
+
+    # Commit before enqueueing: the judge worker reads this row over its own
+    # connection, and get_db()'s commit doesn't happen until after this function
+    # returns. Without this, the worker can (and, under low latency, reliably does)
+    # run its query before the row is visible outside this transaction.
+    await db.commit()
 
     from app.tasks.judge_tasks import judge_run  # local import avoids a circular import
 
@@ -356,7 +396,7 @@ async def get_code_run(
 
 @router.post("/submit", response_model=SubmitReceipt)
 async def submit_exam(
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
+    attempt: Annotated[ExamAttempt, Depends(attempt_exam)],
     db: Annotated[AsyncSession, Depends(get_db)],
     auto: bool = False,
 ) -> SubmitReceipt:
@@ -388,8 +428,13 @@ async def submit_exam(
         )
     )
     await cache.clear_attempt(str(attempt.id))
+    await cache.publish_live_update(str(attempt.exam_id))
 
     if coding_pending:
+        # Same reasoning as run_code: commit first so the judge worker's own
+        # connection can actually see the answers it's about to grade.
+        await db.commit()
+
         from app.tasks.judge_tasks import grade_attempt_coding
 
         grade_attempt_coding.delay(str(attempt.id))

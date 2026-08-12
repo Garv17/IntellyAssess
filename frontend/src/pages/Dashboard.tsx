@@ -1,11 +1,16 @@
-import { CalendarClock, CheckCircle2, FileBarChart2, LogOut, TimerReset } from 'lucide-react';
+import { CalendarClock, CheckCircle2, LogOut, TimerReset } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, api, tokens, type ExamSummary, type Me } from '../api';
+import logo from '../assets/logo.png';
 import { Identity } from '../components/Avatar';
 import DropdownMenu, { DropdownItem } from '../components/DropdownMenu';
 import EmptyState from '../components/EmptyState';
 import { SkeletonCardGrid } from '../components/Skeleton';
+
+// SEB's own browser identifies itself in the UA string (e.g. "...SEB/3.7...").
+// Used to tell "launch SEB" (outside it) apart from "start exam" (already inside it).
+const inSafeExamBrowser = /SEB[/ ]|SafeExamBrowser/i.test(navigator.userAgent);
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -63,10 +68,8 @@ export default function Dashboard() {
     <div className="shell">
       <header className="top-bar">
         <span className="brand">
-          <span className="brand-mark">
-            <FileBarChart2 size={16} />
-          </span>
-          Examination Portal
+          <img src={logo} alt="IntellyAssess" className="brand-mark" />
+          IntellyAssess
         </span>
         <div className="top-bar-right">
           {me && (
@@ -96,7 +99,7 @@ export default function Dashboard() {
             <EmptyState
               icon={<CalendarClock size={24} />}
               title="No exams open right now"
-              description="Check back at your scheduled time — this page updates automatically once an exam window opens."
+              description="Check back at your scheduled time. This page updates automatically once an exam window opens."
             />
           </div>
         ) : (
@@ -135,23 +138,43 @@ export default function Dashboard() {
                   ) : (
                     <>
                       <ul className="rules">
-                        <li>One attempt only — the timer starts as soon as you begin.</li>
+                        <li>
+                          {exam.requires_seb
+                            ? 'This exam must be taken inside Safe Exam Browser.'
+                            : 'One attempt only. The timer starts as soon as you begin.'}
+                        </li>
                         <li>Answers save automatically; refreshing is safe.</li>
                         <li>The exam submits itself when the timer reaches zero.</li>
                       </ul>
-                      <button
-                        className="btn primary full"
-                        disabled={starting === exam.id}
-                        onClick={() => void start(exam.id)}
-                      >
-                        {starting === exam.id ? (
-                          <>
-                            <TimerReset size={15} className="spinner" /> Starting…
-                          </>
-                        ) : (
-                          'Start exam'
-                        )}
-                      </button>
+                      {exam.requires_seb && !inSafeExamBrowser ? (
+                        <>
+                          <a
+                            className="btn primary full"
+                            href={`seb://${window.location.host}/uploads/seb/${exam.id}.seb`}
+                          >
+                            Launch in Safe Exam Browser
+                          </a>
+                          <p className="muted small">
+                            Don't have SEB installed?{' '}
+                            <a href={`/uploads/seb/${exam.id}.seb`}>Download the config file</a> and
+                            open it after installing Safe Exam Browser.
+                          </p>
+                        </>
+                      ) : (
+                        <button
+                          className="btn primary full"
+                          disabled={starting === exam.id}
+                          onClick={() => void start(exam.id)}
+                        >
+                          {starting === exam.id ? (
+                            <>
+                              <TimerReset size={15} className="spinner" /> Starting…
+                            </>
+                          ) : (
+                            'Start exam'
+                          )}
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

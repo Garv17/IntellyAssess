@@ -1,7 +1,7 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search, Users, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Search, Users, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, type AttemptFilters, type AttemptListPage, type Exam } from '../../api';
+import { api, downloadAttemptsExport, type AttemptFilters, type AttemptListPage, type Exam } from '../../api';
 import AppShell from '../../components/AppShell';
 import { Identity } from '../../components/Avatar';
 import { ScoreBadge } from '../../components/Badge';
@@ -23,6 +23,19 @@ const EMPTY_DRAFT = {
   date_to: '',
 };
 
+function toAttemptFilters(query: typeof EMPTY_DRAFT): Omit<AttemptFilters, 'sort' | 'order' | 'page' | 'page_size'> {
+  return {
+    search: query.search || undefined,
+    cohort: query.cohort || undefined,
+    exam_id: query.exam_id || undefined,
+    status: query.status || undefined,
+    min_score: query.min_score ? Number(query.min_score) : undefined,
+    max_score: query.max_score ? Number(query.max_score) : undefined,
+    date_from: query.date_from || undefined,
+    date_to: query.date_to || undefined,
+  };
+}
+
 export default function StudentDetails() {
   const navigate = useNavigate();
   const [exams, setExams] = useState<Exam[]>([]);
@@ -35,6 +48,7 @@ export default function StudentDetails() {
   const [data, setData] = useState<AttemptListPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     void api.adminExams().then(setExams).catch(() => undefined);
@@ -42,14 +56,7 @@ export default function StudentDetails() {
 
   useEffect(() => {
     const filters: AttemptFilters = {
-      search: query.search || undefined,
-      cohort: query.cohort || undefined,
-      exam_id: query.exam_id || undefined,
-      status: query.status || undefined,
-      min_score: query.min_score ? Number(query.min_score) : undefined,
-      max_score: query.max_score ? Number(query.max_score) : undefined,
-      date_from: query.date_from || undefined,
-      date_to: query.date_to || undefined,
+      ...toAttemptFilters(query),
       sort,
       order,
       page,
@@ -76,6 +83,17 @@ export default function StudentDetails() {
     setDraft(EMPTY_DRAFT);
     setQuery(EMPTY_DRAFT);
     setPage(1);
+  };
+
+  const exportFiltered = async () => {
+    setExporting(true);
+    try {
+      await downloadAttemptsExport({ ...toAttemptFilters(query), sort, order });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const toggleSort = (key: SortKey) => {
@@ -141,6 +159,14 @@ export default function StudentDetails() {
             </label>
             <button className="btn primary">
               <Search size={15} /> Apply
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void exportFiltered()}
+              disabled={exporting || loading}
+            >
+              <Download size={15} /> {exporting ? 'Exporting…' : 'Export to Excel'}
             </button>
           </div>
 

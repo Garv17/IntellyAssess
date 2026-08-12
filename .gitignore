@@ -24,6 +24,7 @@ pip-log.txt
 *.crt
 *.pfx
 *.p12
+*.seb
 
 # ---- Runtime artifacts — uploaded DI images are data, not source ----
 backend/uploads/*

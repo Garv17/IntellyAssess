@@ -24,6 +24,8 @@ DEADLINE = "attempt:{attempt_id}:deadline"  # string: ISO timestamp
 DIRTY = "dirty_attempts"  # set of attempt_ids awaiting flush
 DENYLIST = "jti:denied:{jti}"  # string: "1"
 SESSION = "student:{student_id}:session"  # string: active jti (single-session)
+MAGIC_COOLDOWN = "magic:cooldown:{student_id}"  # string: "1"
+LIVE_CHANNEL = "live:{exam_id}"  # pub/sub: marker only, no payload
 
 
 def redis() -> aioredis.Redis:
@@ -143,6 +145,33 @@ async def register_session(student_pk: str, jti: str, ttl_seconds: int) -> str |
     except Exception as exc:  # pragma: no cover
         log.warning("redis register_session failed: %s", exc)
         return None
+
+
+# -------------------------------------------------------- magic-link cooldown
+
+
+async def start_magic_cooldown(student_pk: str, ttl_seconds: int) -> bool:
+    """Atomically claims the cooldown slot. True means the caller may send a link now;
+    False means one went out too recently. Fails open (allows sending) if Redis is
+    down — the email provider's own quota is the backstop, not this check."""
+    try:
+        key = MAGIC_COOLDOWN.format(student_id=student_pk)
+        return bool(await redis().set(key, "1", ex=max(ttl_seconds, 1), nx=True))
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis start_magic_cooldown failed: %s", exc)
+        return True
+
+
+# ---------------------------------------------------------- live monitor pub/sub
+
+
+async def publish_live_update(exam_id: str) -> None:
+    """Marker-only publish — whichever worker process holds the connected sockets
+    recomputes and pushes the snapshot itself (see app/pubsub.py)."""
+    try:
+        await redis().publish(LIVE_CHANNEL.format(exam_id=exam_id), "changed")
+    except Exception as exc:  # pragma: no cover - degraded path
+        log.warning("redis publish_live_update failed: %s", exc)
 
 
 def seconds_until(deadline: datetime) -> int:

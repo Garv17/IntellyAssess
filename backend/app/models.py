@@ -69,6 +69,16 @@ class JudgeStatus(str, enum.Enum):
 class JudgeMode(str, enum.Enum):
     sample = "sample"
     final = "final"
+    # Ad-hoc run against student-typed input with no expected output to grade against.
+    custom = "custom"
+
+
+class ProblemType(str, enum.Enum):
+    # The student's code is the whole program: it reads stdin, prints stdout.
+    stdio = "stdio"
+    # The student writes only a function body; the judge supplies a generated
+    # driver that decodes structured parameters, calls it, and encodes the result.
+    function = "function"
 
 
 # --------------------------------------------------------------------------- users
@@ -91,9 +101,9 @@ class Student(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     student_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Required and unique: it's the magic-link login identity, not just contact info.
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     cohort: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     attempts: Mapped[list[ExamAttempt]] = relationship(back_populates="student")
@@ -116,7 +126,7 @@ class Exam(Base, TimestampMixin):
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    randomize_options: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    randomize_options: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     # NULL => no pass/fail badge is shown anywhere; admin hasn't set a threshold
     pass_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -125,6 +135,10 @@ class Exam(Base, TimestampMixin):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
     )
+    requires_seb: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # SHA-256 hex Config Key shown by the SEB Config Tool once a .seb file's settings
+    # are finalized. Only meaningful when requires_seb is true.
+    seb_config_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     sections: Mapped[list[Section]] = relationship(
         back_populates="exam", cascade="all, delete-orphan", order_by="Section.order_index"
@@ -243,12 +257,35 @@ class CodingProblem(Base, TimestampMixin):
         nullable=False,
     )
     statement_md: Mapped[str] = mapped_column(Text, nullable=False)
+    constraints_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_languages: Mapped[list[str]] = mapped_column(
         ARRAY(String(32)), default=lambda: ["python", "java", "cpp"], nullable=False
     )
     time_limit_ms: Mapped[int] = mapped_column(Integer, default=2000, nullable=False)
-    memory_limit_mb: Mapped[int] = mapped_column(Integer, default=128, nullable=False)
+    memory_limit_mb: Mapped[int] = mapped_column(Integer, default=256, nullable=False)
     starter_code: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    problem_type: Mapped[ProblemType] = mapped_column(
+        Enum(ProblemType, name="problem_type"),
+        default=ProblemType.stdio,
+        server_default=ProblemType.stdio.value,
+        nullable=False,
+    )
+    # Only set (and only meaningful) when problem_type is "function".
+    function_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    return_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Ordered [{"name": str, "type": str}, ...] — see app.services.harness.PARAM_TYPES
+    # for the valid type strings.
+    parameters: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # SQL-only fields below. Only meaningful when "sql" is in allowed_languages.
+    # dialect is display metadata only — every dialect still executes on the
+    # sqlite sandbox in services/sandbox.py; there's no per-dialect judge yet.
+    sql_dialect: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Shared CREATE TABLE + INSERT script for the whole question — test cases no
+    # longer duplicate this in their own stdin (see TestCase.stdin below).
+    sql_schema_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional display-only column names for the result grid; grading is still a
+    # raw text compare of expected_stdout, this never affects that.
+    sql_result_columns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     question: Mapped[Question] = relationship(back_populates="coding_problem")
     test_cases: Mapped[list[TestCase]] = relationship(
@@ -263,8 +300,17 @@ class TestCase(Base):
     coding_problem_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("coding_problems.id", ondelete="CASCADE"), nullable=False
     )
+    # For SQL problems, the schema/seed data lives on CodingProblem.sql_schema_sql
+    # instead — stdin here is normally blank and only holds a rare per-case setup
+    # addendum (e.g. an extra row needed just for one hidden edge case).
     stdin: Mapped[str] = mapped_column(Text, default="", nullable=False)
     expected_stdout: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Function-mode equivalents of stdin/expected_stdout above — only one pair is
+    # ever populated, depending on the parent problem's problem_type.
+    param_values: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    expected_value: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    # Only meaningful for sample cases — shown as the worked-example explanation.
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Sample cases are the only ones a student can see or run against.
     is_sample: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     weight: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -307,6 +353,9 @@ class ExamAttempt(Base, TimestampMixin):
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Advisory anti-cheat signals for human review; never auto-fails a student.
     focus_loss_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # True only when the exam required SEB and the Config Key check passed at start.
+    # Advisory record of the fact, not itself an enforcement point.
+    seb_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     student: Mapped[Student] = relationship(back_populates="attempts")
     answers: Mapped[list[Answer]] = relationship(
@@ -362,6 +411,14 @@ class JudgeRun(Base):
     language: Mapped[str] = mapped_column(String(32), nullable=False)
     code_text: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[JudgeMode] = mapped_column(Enum(JudgeMode, name="judge_mode"), nullable=False)
+    # Set when this run targets one specific sample case rather than all of them.
+    test_case_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("test_cases.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set for JudgeMode.custom runs — student-typed input with no expected output.
+    custom_stdin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Function-mode equivalent of custom_stdin above — ordered param values.
+    custom_params: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[JudgeStatus] = mapped_column(
         Enum(JudgeStatus, name="judge_status"), default=JudgeStatus.queued, nullable=False
     )
@@ -375,6 +432,29 @@ class JudgeRun(Base):
     )
 
     __table_args__ = (Index("ix_judge_runs_attempt_question", "attempt_id", "question_id"),)
+
+
+class ExamInvite(Base, TimestampMixin):
+    """One row per (exam, student). The emailed link only ever redeems to whichever
+    PIN is currently valid (never the raw token itself) — see app/routers/invites.py
+    for why that's what makes the link safe against email link-scanners."""
+
+    __tablename__ = "exam_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    exam_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # sha256 of the emailed token — never store it raw.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    pin_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pin_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pin_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("exam_id", "student_id", name="uq_invite_exam_student"),)
 
 
 class AuditLog(Base):

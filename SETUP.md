@@ -45,40 +45,52 @@ Expect `{"status":"ok","checks":{"database":"up","redis":"up"}}`.
 ## 5. Create tables + demo data
 
 ```powershell
-docker compose exec api python -m scripts.seed --students 25
+docker compose exec backend python -m scripts.seed --students 25
 ```
 
-Prints the logins. Safe to re-run.
+Prints the admin login and the demo student IDs. Safe to re-run.
 
 | Role | Login |
 |---|---|
-| Student | `STU0001` / `Student@123` |
 | Admin | `admin@example.com` / `Admin@123` |
+| Student | no password — magic link only, see step 7 (demo student: `STU0001`, `stu0001@example.com`) |
 
-## 6. Pre-pull the Python judge image
+## 6. Pre-pull the judge images
 
-Skip this and the first "Run code" click hangs ~60s while Docker downloads it.
+Skip this and the first "Run code" click in a given language hangs ~60s while Docker
+downloads its image.
 
 ```powershell
 docker pull python:3.11-alpine
 ```
 
-Add `node:20-alpine`, `gcc:13`, or `eclipse-temurin:21-jdk-alpine` only if you'll use
-those languages.
+Add `node:20-alpine`, `gcc:13`, `eclipse-temurin:21-jdk-alpine`, and `nouchka/sqlite3:latest`
+too if the exam allows JavaScript, C/C++, Java, or SQL.
 
 ## 7. Sit the demo exam
 
-Open http://localhost:5173, log in as `STU0001` / `Student@123`.
+Students sign in via a one-time link emailed to them, not a password. In development
+there's no need for a real mailbox: the API hands the token straight back.
 
-1. Click **Start exam** — the 60-minute timer starts server-side now.
-2. Answer an MCQ → indicator shows `Saving…` then `Saved`.
-3. **Press F5** — your answer and the correct remaining time come back.
-4. Coding section → **Run against samples** → per-case pass/fail.
-5. **Submit** → you get a receipt code.
+1. Open http://localhost:8000/docs, find `POST /api/auth/student/magic-link/request`,
+   **Try it out** with `{"email": "stu0001@example.com"}`, and execute.
+2. Copy the `dev_token` value from the response (only present when
+   `ENVIRONMENT=development`, which is the default here).
+3. Open `http://localhost:5180/auth/magic?token=<dev_token>` — this signs the student
+   in and redirects to the dashboard.
+4. Click **Start exam** — the 60-minute timer starts server-side now.
+5. Answer an MCQ → indicator shows `Saving…` then `Saved`.
+6. **Press F5** — your answer and the correct remaining time come back.
+7. Coding section → **Run against samples** → per-case pass/fail.
+8. **Submit** → you get a confirmation screen.
+
+In a real (non-development) deployment there is no `dev_token`: the link is only ever
+delivered by email, via Brevo.
 
 ## 8. Verify answers reached Postgres
 
-This is the check that matters. Within ~5s of answering:
+This is the check that matters. Within `AUTOSAVE_FLUSH_SECONDS` of answering (15s by
+default; the `.env.example` value):
 
 ```powershell
 docker compose exec postgres psql -U exam -d exam -c "SELECT count(*) FROM answers;"
@@ -86,15 +98,18 @@ docker compose exec postgres psql -U exam -d exam -c "SELECT count(*) FROM answe
 
 **A count of 0 means the `beat` container isn't running.** The exam looks fine to the
 student while nothing is saved durably. Check with `docker compose logs beat` — you should
-see `flush-answer-buffer` every 5s.
+see `flush-answer-buffer` every 15s (or whatever `AUTOSAVE_FLUSH_SECONDS` is set to). This
+is a single batched job draining up to 500 dirty attempts per run, not one write per
+student, so it stays cheap at 400 concurrent users even at this interval.
 
 ## 9. Check the admin side
 
-Open http://localhost:5173/admin/login in a **private window** (so the student session
+Open http://localhost:5180/admin/login in a **private window** (so the student session
 stays alive), log in as `admin@example.com` / `Admin@123`.
 
-- **Monitor** — per-student rows, refreshing every 5s. Answered counts lag up to 5s;
-  that's expected.
+- **Monitor** — per-student rows, pushed live over WebSocket. Answered counts can still
+  lag up to `AUTOSAVE_FLUSH_SECONDS` (15s by default) behind what the student actually
+  typed, since that count only reflects what's been flushed to Postgres; that's expected.
 - **Export** — downloads results as XLSX.
 
 ## 10. Build your own exam
@@ -116,7 +131,7 @@ with a missing image). Fix and retry.
 ## Daily commands
 
 ```powershell
-docker compose logs -f api      # follow API logs
+docker compose logs -f backend      # follow API logs
 docker compose down             # stop, keep data
 docker compose down -v          # stop, DELETE database
 docker compose up --build -d    # start again
@@ -140,22 +155,32 @@ docker compose up --build -d    # start again
 | Logged out / 401 mid-exam | Someone logged in as the same student ID elsewhere. One active session per student is by design — don't test with a student who's already signed in |
 | `429 Too Many Requests` on login | Login rate limit (5/min/IP). Wait a minute |
 | Port already in use | Change the port mapping in `docker-compose.yml` |
+| Magic-link response has no `dev_token` | `ENVIRONMENT` isn't `development`, or you called the endpoint from a non-dev deployment. Real deployments only ever deliver the link by email |
+| "This link has already been used" | Magic links are single-use and denylisted on redemption. Request a new one |
+| `BREVO_API_KEY is not set` on startup | Required once `ENVIRONMENT` is not `development`, since students can only sign in by email. Set it or stay in development locally |
 
 Start over completely:
 
 ```powershell
 docker compose down -v
 docker compose up --build -d
-docker compose exec api python -m scripts.seed --students 25
+docker compose exec backend python -m scripts.seed --students 25
 ```
 
 ---
 
 ## Before a real exam
 
-- [ ] Set `JWT_SECRET` (32+ bytes) **and** `ENVIRONMENT=production` — the second one turns
-      on the weak-secret check and disables `/docs`
+- [ ] Set `JWT_SECRET` (32+ bytes) and `ENVIRONMENT=production` (turns on the weak-secret
+      and mailer-key checks) **and** `DEBUG=false` separately. `/docs` is gated on
+      `DEBUG`, not `ENVIRONMENT` — setting only the latter leaves the API docs public
+- [ ] Set `BREVO_API_KEY` and a verified `BREVO_SENDER_EMAIL`. The API refuses to start
+      in production without a mailer key, since it's the only way a student signs in
 - [ ] Change the Postgres password from `exam:exam` in `docker-compose.yml`
+- [ ] Remove the host `ports:` mappings for `postgres` (5432), `redis` (6379), and `api`
+      (8000) in `docker-compose.yml`. As shipped they bypass nginx entirely, which means
+      no TLS and no rate limiting on the API, and Postgres/Redis reachable from outside
+      the host. Only `frontend` (5180, which proxies `/api/`) needs to stay published
 - [ ] Put TLS in front — the compose file serves plain HTTP
 - [ ] Load test at 1.5× expected concurrency:
       `python -m scripts.loadtest --students 400 --duration 300`
