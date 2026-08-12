@@ -1,6 +1,10 @@
 import { type AnswerSave, type Question } from '../api';
-import CodingView from './CodingView';
 
+// Coding questions get their own IDE-style 3-pane workspace (see
+// CodingWorkspace + CodingProblemPane/CodingEditorPane) driven directly by
+// Exam.tsx, which needs to place the question navigator as a third pane
+// alongside the problem/editor — something this single-pane component has no
+// way to express. This component only ever renders MCQ/DI questions now.
 export default function QuestionView({
   question,
   diGroup,
@@ -12,10 +16,6 @@ export default function QuestionView({
   answer?: AnswerSave;
   onChange: (id: string, patch: Partial<AnswerSave>, immediate: boolean) => void;
 }) {
-  if (question.type === 'coding' && question.coding_problem) {
-    return <CodingView question={question} answer={answer} onChange={onChange} />;
-  }
-
   return (
     <div>
       {diGroup && (

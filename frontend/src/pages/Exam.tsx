@@ -2,6 +2,9 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Flag, Timer } from 'lucide-re
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, api, type AnswerSave, type ExamPaper } from '../api';
+import CodingWorkspace from '../components/CodingWorkspace';
+import { CodingEditorPane, CodingProblemPane } from '../components/CodingView';
+import QuestionNavigator from '../components/QuestionNavigator';
 import QuestionView from '../components/QuestionView';
 import SaveIndicator from '../components/SaveIndicator';
 import { useAutoSave } from '../hooks/useAutoSave';
@@ -186,29 +189,20 @@ export default function Exam() {
       )}
       {error && <div className="banner error">{error}</div>}
 
-      <div className="exam-body">
-        <main className="question-pane">
+      {(() => {
+        const questionHead = (
           <div className="question-head">
-            <span className="pill">Question {cursor + 1} of {flat.length}</span>
+            <span className="pill">
+              Question {cursor + 1} of {flat.length}
+            </span>
             <span className="pill">{current.question.marks} marks</span>
             {current.question.negative_marks > 0 && (
               <span className="pill danger">−{current.question.negative_marks} if wrong</span>
             )}
           </div>
+        );
 
-          <div key={current.question.id} className="question-fade">
-            <QuestionView
-              question={current.question}
-              diGroup={
-                current.question.di_group_id
-                  ? current.section.di_groups.find((g) => g.id === current.question.di_group_id)
-                  : undefined
-              }
-              answer={answers[current.question.id]}
-              onChange={update}
-            />
-          </div>
-
+        const navRow = (
           <div className="nav-row">
             <button
               className="btn"
@@ -247,58 +241,63 @@ export default function Exam() {
               </label>
             </div>
           </div>
-        </main>
+        );
 
-        <aside className="palette">
-          <div className="palette-stats">
-            <div>
-              <strong>{answered}</strong>
-              <span>Answered</span>
-            </div>
-            <div>
-              <strong>{flat.length - answered}</strong>
-              <span>Remaining</span>
-            </div>
-          </div>
-          {paper.sections.map((section) => (
-            <div key={section.id} className="palette-section">
-              <h4>{section.title}</h4>
-              <div className="palette-grid">
-                {section.questions.map((question) => {
-                  const index = flat.findIndex((f) => f.question.id === question.id);
-                  const answer = answers[question.id];
-                  const isAnswered = Boolean(
-                    answer?.selected_option_id || answer?.code_text?.trim(),
-                  );
-                  const classes = [
-                    'palette-cell',
-                    isAnswered ? 'answered' : '',
-                    answer?.is_marked_for_review ? 'review' : '',
-                    index === cursor ? 'active' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ');
-                  return (
-                    <button
-                      key={question.id}
-                      className={classes}
-                      onClick={() => setCursor(index)}
-                      title={question.type.toUpperCase()}
-                    >
-                      {index + 1}
-                    </button>
-                  );
-                })}
+        const navigator = (
+          <QuestionNavigator
+            sections={paper.sections}
+            flat={flat}
+            cursor={cursor}
+            answers={answers}
+            answered={answered}
+            onSelect={(index) => {
+              setCursor(index);
+              void autoSave.flush();
+            }}
+          />
+        );
+
+        if (current.question.type === 'coding' && current.question.coding_problem) {
+          return (
+            <CodingWorkspace
+              problemHead={questionHead}
+              problemBody={<CodingProblemPane key={current.question.id} question={current.question} />}
+              problemFoot={navRow}
+              editorPane={
+                <CodingEditorPane
+                  key={current.question.id}
+                  question={current.question}
+                  answer={answers[current.question.id]}
+                  onChange={update}
+                />
+              }
+              navigatorPane={navigator}
+            />
+          );
+        }
+
+        return (
+          <div className="exam-body">
+            <main className="question-pane">
+              {questionHead}
+              <div key={current.question.id} className="question-fade">
+                <QuestionView
+                  question={current.question}
+                  diGroup={
+                    current.question.di_group_id
+                      ? current.section.di_groups.find((g) => g.id === current.question.di_group_id)
+                      : undefined
+                  }
+                  answer={answers[current.question.id]}
+                  onChange={update}
+                />
               </div>
-            </div>
-          ))}
-          <div className="legend">
-            <span><i className="swatch answered" /> Answered</span>
-            <span><i className="swatch review" /> For review</span>
-            <span><i className="swatch" /> Not answered</span>
+              {navRow}
+            </main>
+            <aside className="palette">{navigator}</aside>
           </div>
-        </aside>
-      </div>
+        );
+      })()}
 
       {confirmOpen && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">

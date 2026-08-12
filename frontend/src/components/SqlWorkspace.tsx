@@ -1,6 +1,7 @@
 import { AlertCircle, Loader2, Play } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { api, type AnswerSave, type CodeRun, type Question } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, type AnswerSave, type CodeRun, type CodingProblem, type Question } from '../api';
+import { useVerticalSplit } from '../hooks/useResizablePanes';
 import CodeEditor from './CodeEditor';
 import Collapsible from './Collapsible';
 import Markdown from './Markdown';
@@ -8,35 +9,13 @@ import Splitter from './Splitter';
 import SqlResultGrid from './SqlResultGrid';
 import SqlSchemaExplorer from './SqlSchemaExplorer';
 
-const PANE_SIZES_KEY = 'sql-workspace-pane-sizes';
-const DEFAULT_PANE_SIZES = { schemaWidth: 380, editorHeight: 360 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function loadPaneSizes(): typeof DEFAULT_PANE_SIZES {
-  try {
-    const raw = window.localStorage.getItem(PANE_SIZES_KEY);
-    if (!raw) return DEFAULT_PANE_SIZES;
-    const parsed = JSON.parse(raw);
-    return {
-      schemaWidth: clamp(Number(parsed.schemaWidth) || DEFAULT_PANE_SIZES.schemaWidth, 280, 640),
-      editorHeight: clamp(Number(parsed.editorHeight) || DEFAULT_PANE_SIZES.editorHeight, 200, 640),
-    };
-  } catch {
-    return DEFAULT_PANE_SIZES;
-  }
-}
-
-function savePaneSizes(sizes: typeof DEFAULT_PANE_SIZES) {
-  try {
-    window.localStorage.setItem(PANE_SIZES_KEY, JSON.stringify(sizes));
-  } catch {
-    // Storage can be unavailable (private mode, quota) — resizing still works
-    // for the session, it just won't persist across reloads.
-  }
-}
+const ROWS_KEY = 'sql-editor-rows';
+const DEFAULT_EDITOR_SHARE = 68;
+// See CodingView.tsx's identical constants for the reasoning.
+const EDITOR_FLOOR_PX = 220;
+const RESULTS_FLOOR_PX = 150;
+const EDITOR_MAX_PCT = 80;
+const RESULTS_MAX_PCT = 80;
 
 const DIALECT_LABELS: Record<string, string> = {
   sqlite: 'SQLite',
@@ -57,10 +36,77 @@ function verdictInfo(verdict: string) {
   return VERDICT_INFO[verdict] ?? { label: verdict, className: 'bad' };
 }
 
-/** Dedicated SQL question workspace: schema explorer instead of generic
-    stdin/stdout examples, no language select (a SQL question only ever has
-    one), and a professional result grid instead of a plain-text console. */
-export default function SqlWorkspace({
+/** The left-pane content for a SQL question: description/constraints in one
+    capped, independently-scrolling region, and the schema explorer — also
+    collapsible, so it can be tucked away for more editor/results room —
+    filling the rest of the pane in its own scroll region below when open, so
+    a long description can never push the schema (the thing students
+    reference over and over while writing a query) out of view, and neither
+    one's scroll touches the page or the editor. */
+export function SqlProblemPane({ problem }: { problem: CodingProblem }) {
+  const schemaScrollRef = useRef<HTMLDivElement | null>(null);
+  const schemaContentRef = useRef<HTMLDivElement | null>(null);
+  const [schemaShadow, setSchemaShadow] = useState({ top: false, bottom: false });
+
+  const updateSchemaShadow = useCallback(() => {
+    const el = schemaScrollRef.current;
+    if (!el) return;
+    setSchemaShadow({
+      top: el.scrollTop > 2,
+      bottom: el.scrollTop + el.clientHeight < el.scrollHeight - 2,
+    });
+  }, []);
+
+  useEffect(() => {
+    updateSchemaShadow();
+    const scrollEl = schemaScrollRef.current;
+    const contentEl = schemaContentRef.current;
+    if (!scrollEl || !contentEl) return;
+    // Table cards expand/collapse without the scroll container itself resizing,
+    // so watch the content's box size (not just scroll events) to catch that.
+    const ro = new ResizeObserver(updateSchemaShadow);
+    ro.observe(scrollEl);
+    ro.observe(contentEl);
+    return () => ro.disconnect();
+  }, [problem.sql_schema_sql, updateSchemaShadow]);
+
+  return (
+    <div className="sql-problem-pane">
+      <div className="sql-problem-top">
+        <Collapsible title="Description">
+          <Markdown>{problem.statement_md}</Markdown>
+        </Collapsible>
+        {problem.constraints_md && (
+          <Collapsible title="Constraints">
+            <Markdown>{problem.constraints_md}</Markdown>
+          </Collapsible>
+        )}
+      </div>
+
+      <Collapsible className="sql-schema-collapsible" title="Database Schema">
+        {problem.sql_schema_sql ? (
+          <div className="sql-schema-scroll-wrap">
+            <div className="sql-schema-scroll" ref={schemaScrollRef} onScroll={updateSchemaShadow}>
+              <div ref={schemaContentRef}>
+                <SqlSchemaExplorer sql={problem.sql_schema_sql} />
+              </div>
+            </div>
+            <div className={`sql-scroll-shadow top ${schemaShadow.top ? 'visible' : ''}`} />
+            <div className={`sql-scroll-shadow bottom ${schemaShadow.bottom ? 'visible' : ''}`} />
+          </div>
+        ) : (
+          <p className="muted small sql-schema-empty">No schema provided for this question.</p>
+        )}
+      </Collapsible>
+    </div>
+  );
+}
+
+/** The center-pane content for a SQL question: editor on top, results below,
+    split by a draggable divider whose ratio is a percentage of the pane's own
+    height (not a fixed px number) so the editor keeps getting the majority of
+    the space at any zoom level or window size. */
+export function SqlEditorPane({
   question,
   answer,
   onChange,
@@ -75,19 +121,12 @@ export default function SqlWorkspace({
   const [running, setRunning] = useState(false);
   const pollRef = useRef<number | null>(null);
 
-  const [paneSizes, setPaneSizes] = useState(loadPaneSizes);
-  const resizeSchema = (delta: number) =>
-    setPaneSizes((prev) => {
-      const next = { ...prev, schemaWidth: clamp(prev.schemaWidth + delta, 280, 640) };
-      savePaneSizes(next);
-      return next;
-    });
-  const resizeEditor = (delta: number) =>
-    setPaneSizes((prev) => {
-      const next = { ...prev, editorHeight: clamp(prev.editorHeight + delta, 200, 640) };
-      savePaneSizes(next);
-      return next;
-    });
+  const { containerRef, chromeTopRef, ratios, mins, resize } = useVerticalSplit(ROWS_KEY, DEFAULT_EDITOR_SHARE, {
+    editorFloorPx: EDITOR_FLOOR_PX,
+    resultsFloorPx: RESULTS_FLOOR_PX,
+    editorMaxPct: EDITOR_MAX_PCT,
+    resultsMaxPct: RESULTS_MAX_PCT,
+  });
 
   const [caseId, setCaseId] = useState<string | null>(problem.sample_test_cases[0]?.id ?? null);
 
@@ -135,122 +174,97 @@ export default function SqlWorkspace({
   const dialectLabel = DIALECT_LABELS[problem.sql_dialect ?? 'sqlite'] ?? 'SQLite';
 
   return (
-    <div className="sql-workspace">
-      <div
-        className="sql-workspace-left"
-        style={{ width: paneSizes.schemaWidth, flexBasis: paneSizes.schemaWidth }}
-      >
-        <Collapsible title="Description">
-          <Markdown>{problem.statement_md}</Markdown>
-        </Collapsible>
-        {problem.constraints_md && (
-          <Collapsible title="Constraints">
-            <Markdown>{problem.constraints_md}</Markdown>
-          </Collapsible>
-        )}
-        <Collapsible title="Schema">
-          {problem.sql_schema_sql ? (
-            <SqlSchemaExplorer sql={problem.sql_schema_sql} />
-          ) : (
-            <p className="muted small">No schema provided for this question.</p>
-          )}
-        </Collapsible>
+    <div className="cw-editor-inner" ref={containerRef}>
+      <div className="editor-bar" ref={chromeTopRef}>
+        <span className="sql-dialect-badge">{dialectLabel}</span>
+        <span className="muted">{problem.time_limit_ms} ms</span>
+        <button
+          className="btn"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => void runCode()}
+          disabled={running || !caseId}
+        >
+          {running ? <Loader2 size={15} className="spinner" /> : <Play size={15} />}
+          {running ? 'Running…' : 'Run'}
+        </button>
       </div>
 
-      <Splitter direction="horizontal" onResize={resizeSchema} />
+      <div className="editor-frame" style={{ flexGrow: ratios[0], flexBasis: 0, minHeight: mins[0] }}>
+        <CodeEditor
+          language="sql"
+          value={code}
+          height="100%"
+          onChange={(value) => {
+            setCode(value);
+            onChange(question.id, { code_text: value, language: 'sql' }, false);
+          }}
+        />
+      </div>
 
-      <div className="sql-workspace-main">
-        <div className="editor-bar">
-          <span className="sql-dialect-badge">{dialectLabel}</span>
-          <span className="muted">{problem.time_limit_ms} ms</span>
-          <button
-            className="btn"
-            style={{ marginLeft: 'auto' }}
-            onClick={() => void runCode()}
-            disabled={running || !caseId}
-          >
-            {running ? <Loader2 size={15} className="spinner" /> : <Play size={15} />}
-            {running ? 'Running…' : 'Run'}
-          </button>
-        </div>
+      <Splitter direction="vertical" onResize={resize} />
 
-        <div className="editor-frame">
-          <CodeEditor
-            language="sql"
-            value={code}
-            height={`${paneSizes.editorHeight}px`}
-            onChange={(value) => {
-              setCode(value);
-              onChange(question.id, { code_text: value, language: 'sql' }, false);
-            }}
-          />
-        </div>
+      <div className="sql-results-panel" style={{ flexGrow: ratios[1], flexBasis: 0, minHeight: mins[1] }}>
+        {problem.sample_test_cases.length === 0 ? (
+          <p className="muted small">This question has no sample test cases to run against.</p>
+        ) : (
+          <div className="sql-case-chip-row">
+            {problem.sample_test_cases.map((tc, i) => (
+              <button
+                key={tc.id}
+                type="button"
+                className={`sql-case-chip ${caseId === tc.id ? 'active' : ''}`}
+                onClick={() => {
+                  setCaseId(tc.id);
+                  setRun(null);
+                }}
+              >
+                Case {i + 1}
+              </button>
+            ))}
+          </div>
+        )}
 
-        <Splitter direction="vertical" onResize={resizeEditor} />
+        {!run && <p className="muted small">Run your query to see the result here.</p>}
 
-        <div className="sql-results-panel">
-          {problem.sample_test_cases.length === 0 ? (
-            <p className="muted small">This question has no sample test cases to run against.</p>
-          ) : (
-            <div className="sql-case-chip-row">
-              {problem.sample_test_cases.map((tc, i) => (
-                <button
-                  key={tc.id}
-                  type="button"
-                  className={`sql-case-chip ${caseId === tc.id ? 'active' : ''}`}
-                  onClick={() => {
-                    setCaseId(tc.id);
-                    setRun(null);
-                  }}
-                >
-                  Case {i + 1}
-                </button>
-              ))}
-            </div>
-          )}
+        {run && run.error && (
+          <div className="sql-error-panel">
+            <AlertCircle size={15} />
+            <pre>{run.error}</pre>
+          </div>
+        )}
 
-          {!run && <p className="muted small">Run your query to see the result here.</p>}
-
-          {run && run.error && (
-            <div className="sql-error-panel">
-              <AlertCircle size={15} />
-              <pre>{run.error}</pre>
-            </div>
-          )}
-
-          {run && !run.error && result && (
-            <>
-              <span className={`verdict-pill ${verdictInfo(result.verdict).className}`}>
-                {verdictInfo(result.verdict).label}
-              </span>
-              {result.stderr ? (
-                <div className="sql-error-panel">
-                  <AlertCircle size={15} />
-                  <pre>{result.stderr}</pre>
+        {run && !run.error && result && (
+          <>
+            <span className={`verdict-pill ${verdictInfo(result.verdict).className}`}>
+              {verdictInfo(result.verdict).label}
+            </span>
+            {result.stderr ? (
+              <div className="sql-error-panel">
+                <AlertCircle size={15} />
+                <pre>{result.stderr}</pre>
+              </div>
+            ) : (
+              <div className="sql-result-columns">
+                <div>
+                  <div className="sql-result-heading">Your Result</div>
+                  <SqlResultGrid
+                    text={result.actual}
+                    compareTo={result.expected}
+                    columnNames={problem.sql_result_columns}
+                    caption={result.time_ms != null ? `${result.time_ms} ms` : undefined}
+                  />
+                  {!result.actual && <p className="muted small">(empty result set)</p>}
                 </div>
-              ) : (
-                <div className="sql-result-columns">
+                {result.expected != null && (
                   <div>
-                    <div className="sql-result-heading">Your Result</div>
-                    <SqlResultGrid
-                      text={result.actual}
-                      compareTo={result.expected}
-                      columnNames={problem.sql_result_columns}
-                      caption={result.time_ms != null ? `${result.time_ms} ms` : undefined}
-                    />
-                    {!result.actual && <p className="muted small">(empty result set)</p>}
+                    <div className="sql-result-heading">Expected Result</div>
+                    <SqlResultGrid text={result.expected} columnNames={problem.sql_result_columns} />
                   </div>
-                  {result.expected != null && (
-                    <div>
-                      <div className="sql-result-heading">Expected Result</div>
-                      <SqlResultGrid text={result.expected} columnNames={problem.sql_result_columns} />
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
