@@ -45,7 +45,7 @@ Expect `{"status":"ok","checks":{"database":"up","redis":"up"}}`.
 ## 5. Create tables + demo data
 
 ```powershell
-docker compose exec api python -m scripts.seed --students 25
+docker compose exec backend python -m scripts.seed --students 25
 ```
 
 Prints the admin login and the demo student IDs. Safe to re-run.
@@ -131,7 +131,7 @@ with a missing image). Fix and retry.
 ## Daily commands
 
 ```powershell
-docker compose logs -f api      # follow API logs
+docker compose logs -f backend      # follow API logs
 docker compose down             # stop, keep data
 docker compose down -v          # stop, DELETE database
 docker compose up --build -d    # start again
@@ -164,7 +164,7 @@ Start over completely:
 ```powershell
 docker compose down -v
 docker compose up --build -d
-docker compose exec api python -m scripts.seed --students 25
+docker compose exec backend python -m scripts.seed --students 25
 ```
 
 ---

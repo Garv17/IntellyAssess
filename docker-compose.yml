@@ -1,4 +1,4 @@
-name: exam-platform
+name: intellyassess
 
 x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://exam:exam@postgres:5432/exam
@@ -10,9 +10,15 @@ x-backend-env: &backend-env
   UPLOAD_DIR: /app/uploads
   CORS_ORIGINS: '["http://localhost:5180","http://localhost:8080"]'
 
+x-backend-env-file: &backend-env-file
+  - path: ./backend/.env
+    required: false
+
 services:
   postgres:
+    container_name: postgres
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: exam
       POSTGRES_PASSWORD: exam
@@ -32,7 +38,9 @@ services:
       retries: 10
 
   redis:
+    container_name: redis
     image: redis:7-alpine
+    restart: unless-stopped
     # appendfsync everysec bounds worst-case answer loss to ~1s if Redis dies.
     command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction
     volumes:
@@ -45,11 +53,11 @@ services:
       timeout: 3s
       retries: 10
 
-  api:
+  backend:
+    container_name: backend
     build: ./backend
-    env_file:
-      - path: ./backend/.env
-        required: false
+    restart: unless-stopped
+    env_file: *backend-env-file
     environment: *backend-env
     volumes:
       - uploads:/app/uploads
@@ -62,11 +70,11 @@ services:
         condition: service_healthy
 
   worker:
+    container_name: worker
     build: ./backend
-    command: celery -A app.tasks.celery_app.celery_app worker -Q default -c 4 --loglevel=info
-    env_file:
-      - path: ./backend/.env
-        required: false
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app.celery_app worker -Q default -c 2 --loglevel=info
+    env_file: *backend-env-file
     environment: *backend-env
     volumes:
       - uploads:/app/uploads
@@ -76,7 +84,7 @@ services:
       redis:
         condition: service_healthy
     # Overrides the backend image's baked-in HEALTHCHECK (curls localhost:8000,
-    # which is only ever listening in the api container) — this one actually
+    # which is only ever listening in the backend container) — this one actually
     # pings the worker running in this container.
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
@@ -86,21 +94,27 @@ services:
       retries: 3
 
   # Judge runs on its own queue with bounded concurrency and needs the Docker socket
-  # to spawn sandbox containers. Give this service its own host in production.
+  # to spawn sandbox containers. -c is capped at 3 (not the Celery default of "one
+  # per core") because this box only has 4 vCPUs shared with postgres/redis/backend/
+  # worker/beat/nginx — each sandbox container itself claims judge_cpus=1.0, so -c 8
+  # here would demand 8 cores' worth of judge alone and starve everything else.
+  # Give this service its own host in production instead of raising this number.
   judge:
+    container_name: judge
     build: ./backend
-    command: celery -A app.tasks.celery_app.celery_app worker -Q judge -c 8 --loglevel=info
-    env_file:
-      - path: ./backend/.env
-        required: false
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app.celery_app worker -Q judge -c 3 --loglevel=info
+    env_file: *backend-env-file
     environment: *backend-env
     user: root
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
-    # See the worker service above: this overrides the inherited api healthcheck
+    # See the worker service above: this overrides the inherited backend healthcheck
     # with one that actually pings the judge worker in this container.
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
@@ -110,28 +124,33 @@ services:
       retries: 3
 
   beat:
+    container_name: beat
     build: ./backend
+    restart: unless-stopped
     command: celery -A app.tasks.celery_app.celery_app beat --loglevel=info
-    env_file:
-      - path: ./backend/.env
-        required: false
+    env_file: *backend-env-file
     environment: *backend-env
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     # celery beat has no "inspect ping" equivalent (it schedules, it doesn't answer
-    # broker pings) — disable the inherited api healthcheck rather than report a
+    # broker pings) — disable the inherited backend healthcheck rather than report a
     # false "unhealthy" against an endpoint that was never going to exist here.
     # Beat's liveness is what SETUP.md's "docker compose logs beat" check verifies.
     healthcheck:
       disable: true
 
   frontend:
+    container_name: frontend
     build: ./frontend
+    restart: unless-stopped
     ports:
       - "5180:80"
     depends_on:
-      - api
+      backend:
+        condition: service_healthy
 
 volumes:
   pgdata:

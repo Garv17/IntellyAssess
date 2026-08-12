@@ -13,7 +13,7 @@
 **No admin UI yet** for toggling `requires_seb`/`seb_config_key` (direct SQL) or for
 triggering invites (`POST /api/admin/exams/{exam_id}/invites` via curl/Swagger).
 
-**All of this is baked into the `api`/`worker`/`judge`/`beat` Docker images at build
+**All of this is baked into the `backend`/`worker`/`judge`/`beat` Docker images at build
 time** — `docker-compose.yml` has no source bind-mount. `docker compose up -d --build`
 (not a plain `up -d`) is what picks up code changes.
 
@@ -26,7 +26,7 @@ header SEB sent. `requested_url` is whatever URL the server thinks it received:
 
 | How you run it | Host header FastAPI sees | Check works? |
 |---|---|---|
-| `docker compose up` (nginx → api) | `localhost:5173` (nginx preserves it: `proxy_set_header Host $host;`) | ✅ |
+| `docker compose up` (nginx → api) | `localhost:5180` (nginx preserves it: `proxy_set_header Host $host;`) | ✅ |
 | `npm run dev` (Vite) + `uvicorn --reload` | `localhost:8000` (Vite's proxy default `changeOrigin: true` rewrites it) | ❌ always 403 |
 | curl straight at `:8000`, no frontend | `localhost:8000` | ✅, if you hash against the `:8000` URL |
 
@@ -42,11 +42,11 @@ Confirms the backend logic before touching the real Config Tool. Uses a made-up
 config key — this tests the hash math, not a real `.seb` file.
 
 ```bash
-docker compose up -d --build postgres redis api
-docker compose exec api python -m scripts.seed
+docker compose up -d --build postgres redis backend
+docker compose exec backend python -m scripts.seed
 ```
 
-Open Docker Desktop → `exam-platform` → `api` → **Logs**, leave it open — every call
+Open Docker Desktop → `intellyassess` → `backend` → **Logs**, leave it open — every call
 below shows up as a normal uvicorn access-log line (`... 403 Forbidden` / `200 OK`).
 
 ```bash
@@ -118,11 +118,11 @@ time (§5 of `SEB_INTEGRATION.md` explains why).
 
 ```bash
 docker compose up -d --build
-docker compose exec api python -m scripts.seed
+docker compose exec backend python -m scripts.seed
 ```
 
-7 containers should come up: `postgres`, `redis`, `api`, `worker`, `judge`, `beat`,
-`frontend`. Keep `api`'s Logs tab open.
+7 containers should come up: `postgres`, `redis`, `backend`, `worker`, `judge`, `beat`,
+`frontend`. Keep `backend`'s Logs tab open.
 
 ```bash
 curl -s -X POST http://localhost:8000/api/auth/student/magic-link/request \
@@ -131,8 +131,8 @@ curl -s -X POST http://localhost:8000/api/auth/student/magic-link/request \
 ```
 
 **Config Tool:**
-1. **General → Start URL**: `http://localhost:5173/auth/magic?token=PASTE_DEV_TOKEN_HERE`
-2. **Network → Filter**: activate URL filtering, allow rule `^http://localhost:5173/.*$`
+1. **General → Start URL**: `http://localhost:5180/auth/magic?token=PASTE_DEV_TOKEN_HERE`
+2. **Network → Filter**: activate URL filtering, allow rule `^http://localhost:5180/.*$`
    (nothing else needed — nginx/Vite proxy `/api` and `/uploads` under this one origin)
 3. **Security → Kiosk Mode**: `None (for debugging only)`
 4. **Exam tab**: tick "Use Browser Exam Key and Config Key," copy the Config Key
@@ -147,7 +147,7 @@ docker compose exec postgres psql -U exam -d exam -c \
 Double-click `demo.seb`. SEB launches, redeems the magic link, lands on `/dashboard`
 already logged in — showing **"Start exam"** (not the launch link, since SEB's own
 user agent is detected). Click through: start → answer → submit. Every request in the
-`api` Logs tab should be `200`, never `403`.
+`backend` Logs tab should be `200`, never `403`.
 
 ```bash
 docker compose exec postgres psql -U exam -d exam -c \
@@ -155,7 +155,7 @@ docker compose exec postgres psql -U exam -d exam -c \
 ```
 
 **Negative test** (normal browser, no SEB): reuse an access token from Tier 1 or the
-curl login above, open DevTools on `http://localhost:5173`:
+curl login above, open DevTools on `http://localhost:5180`:
 ```js
 localStorage.setItem('exam.access', 'PASTE_ACCESS_TOKEN');
 localStorage.setItem('exam.refresh', 'PASTE_REFRESH_TOKEN');
@@ -178,14 +178,14 @@ established by a PIN typed inside SEB rather than anything in the Start URL.
 
 ```bash
 docker compose up -d --build
-docker compose exec api python -m scripts.seed
+docker compose exec backend python -m scripts.seed
 
 docker compose exec postgres psql -U exam -d exam -c \
   "SELECT id, title FROM exams WHERE title='Demo Placement Test';"
 ```
 
 **Add a few students with real emails you can receive mail at** — Admin console
-(`http://localhost:5173/admin`) → "Add student," `Cohort: 2026` on each (the demo exam
+(`http://localhost:5180/admin`) → "Add student," `Cohort: 2026` on each (the demo exam
 is seeded with that cohort) — or via Swagger (`/docs` → `POST /api/admin/students`).
 
 **Send invites** (curl/Swagger — no Admin UI button for this yet):
@@ -206,7 +206,7 @@ check the `worker` container's Logs tab for `sent`/`failed` counts. Each student
 a link to `/invite?token=...` (a normal webpage, safe in any browser).
 
 **Build the one shared `.seb` file** — same Config Tool steps as Tier 2, except:
-- **Start URL**: `http://localhost:5173/pin-login?exam=PASTE_EXAM_ID_HERE` — generic,
+- **Start URL**: `http://localhost:5180/pin-login?exam=PASTE_EXAM_ID_HERE` — generic,
   no personal token.
 - Copy the Config Key, then the same `UPDATE exams SET requires_seb = true,
   seb_config_key = '...'` as before.
@@ -221,7 +221,7 @@ a link to `/invite?token=...` (a normal webpage, safe in any browser).
 3. Type the PIN → real login (reuses `_issue_student_session`, same as magic-link) →
    `/dashboard` → "Start exam" → identical to Tier 2 from here.
 
-Watch `api`'s Logs tab for distinct `POST /api/invite/pin-login` calls per student,
+Watch `backend`'s Logs tab for distinct `POST /api/invite/pin-login` calls per student,
 each `200`, each followed by that student's own `/start`, `/state`, `/heartbeat` —
 all under the same unchanged `seb_config_key`.
 

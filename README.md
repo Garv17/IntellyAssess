@@ -17,7 +17,7 @@ JWT_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))") \
   docker compose up --build -d
 
 # create the schema and a demo exam + 25 students
-docker compose exec api python -m scripts.seed --students 25
+docker compose exec backend python -m scripts.seed --students 25
 ```
 
 | Service | URL |
