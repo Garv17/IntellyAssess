@@ -46,7 +46,7 @@ uvicorn app.main:app --reload
 
 # background workers (separate terminals)
 celery -A app.tasks.celery_app.celery_app worker -Q default -c 4 --loglevel=info
-celery -A app.tasks.celery_app.celery_app worker -Q judge   -c 4 --loglevel=info
+celery -A app.tasks.celery_app.celery_app worker -Q judge_run,judge_grade -c 4 --loglevel=info
 celery -A app.tasks.celery_app.celery_app beat --loglevel=info
 
 # frontend

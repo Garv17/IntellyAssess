@@ -110,11 +110,16 @@ async def request_magic_link(
 
     token, _ = create_magic_token(str(student.id))
     link = f"{settings.frontend_base_url}/auth/magic?token={token}"
-    try:
-        await send_magic_link_email(student.email, student.name, link)
-    except Exception:
-        log.exception("failed to send magic link to student %s", student.id)
-        if settings.environment != "development":
+    # dev_token below already hands the raw token back, so there's nothing for a real
+    # email to accomplish in development — skip the outbound Brevo call entirely rather
+    # than pay for a real HTTPS round trip per login. Under concurrent load this call
+    # was the actual bottleneck: 120 simultaneous logins meant 120 real TLS handshakes
+    # competing for CPU while each held a pooled DB connection open for the duration.
+    if settings.environment != "development":
+        try:
+            await send_magic_link_email(student.email, student.name, link)
+        except Exception:
+            log.exception("failed to send magic link to student %s", student.id)
             return MAGIC_LINK_ACK
 
     await _log(db, "student", student.id, "magic_link_requested")

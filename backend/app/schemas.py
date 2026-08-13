@@ -784,3 +784,32 @@ class OverviewStats(BaseModel):
     students: int
     attempts: int
     average_score: float | None
+
+
+class QueueDepth(BaseModel):
+    pending: int  # tasks waiting in Redis, not yet claimed by any worker
+    active: int  # currently executing across all workers on this queue
+
+
+class JudgeMetricsOut(BaseModel):
+    """Point-in-time judge health for the admin dashboard. Counters are cumulative
+    since the Redis instance was last flushed/restarted, not windowed — read them as
+    "how much has happened", not "rate right now"."""
+
+    queues: dict[str, QueueDepth]
+    run_enqueued: int
+    run_started: int
+    run_done: int
+    run_error: int
+    run_compile_failed: int
+    run_timeout: int
+    run_avg_queue_wait_ms: float | None
+    run_avg_exec_ms: float | None
+    grade_enqueued: int
+    grade_started: int
+    grade_done: int
+    grade_error: int
+    grade_compile_failed: int
+    grade_timeout: int
+    grade_avg_exec_ms: float | None
+    rate_limited: int

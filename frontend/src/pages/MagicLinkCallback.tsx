@@ -1,5 +1,5 @@
 import { AlertCircle, Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, tokens } from '../api';
 
@@ -7,6 +7,7 @@ export default function MagicLinkCallback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+  const requested = useRef(false);
 
   useEffect(() => {
     const token = params.get('token');
@@ -14,6 +15,10 @@ export default function MagicLinkCallback() {
       setError('This link is missing its token.');
       return;
     }
+    // Guard against StrictMode's dev-mode double-invoke: this token is single-use,
+    // so a second verify call would always fail with "already used".
+    if (requested.current) return;
+    requested.current = true;
     api
       .verifyMagicLink(token)
       .then((pair) => {

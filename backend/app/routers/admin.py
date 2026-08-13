@@ -84,6 +84,7 @@ from app.schemas import (
     ExamOut,
     InviteCreateRequest,
     InviteQueued,
+    JudgeMetricsOut,
     LiveMonitorOut,
     LiveStudentRow,
     MagicLinkSent,
@@ -182,6 +183,76 @@ async def overview_stats(admin: AdminDep, db: DbDep) -> OverviewStats:
 
     return OverviewStats(
         exams=exams, students=students, attempts=attempts, average_score=average_score
+    )
+
+
+@router.get("/judge/metrics", response_model=JudgeMetricsOut)
+async def judge_metrics(admin: AdminDep) -> JudgeMetricsOut:
+    """Judge queue health: pending/active per queue plus cumulative counters written
+    by judge_tasks.py (via app.cache.incr_judge_counter / app.sync_db.incr_judge_counter_sync
+    — same Redis keyspace, one async, one sync since Celery tasks have no event loop).
+    No DB access — this is meant to stay cheap enough to poll during a live exam."""
+    from app.tasks.celery_app import celery_app
+
+    queue_names = ["judge_run", "judge_grade"]
+    depths, inspected = await asyncio.gather(
+        cache.get_queue_depths(queue_names),
+        asyncio.to_thread(lambda: celery_app.control.inspect(timeout=1.0).active() or {}),
+    )
+    active_by_queue = dict.fromkeys(queue_names, 0)
+    for tasks in inspected.values():
+        for task in tasks:
+            queue = (task.get("delivery_info") or {}).get("routing_key")
+            if queue in active_by_queue:
+                active_by_queue[queue] += 1
+
+    counter_names = [
+        "run_enqueued",
+        "run_started",
+        "run_done",
+        "run_error",
+        "run_compile_failed",
+        "run_timeout",
+        "run_queue_wait_ms_sum",
+        "run_queue_wait_ms_count",
+        "run_exec_ms_sum",
+        "run_exec_ms_count",
+        "grade_enqueued",
+        "grade_started",
+        "grade_done",
+        "grade_error",
+        "grade_compile_failed",
+        "grade_timeout",
+        "grade_exec_ms_sum",
+        "grade_exec_ms_count",
+        "rate_limited",
+    ]
+    c = await cache.get_judge_counters(counter_names)
+
+    def _avg(sum_key: str, count_key: str) -> float | None:
+        return round(c[sum_key] / c[count_key], 1) if c[count_key] else None
+
+    return JudgeMetricsOut(
+        queues={
+            name: {"pending": depths.get(name, 0), "active": active_by_queue.get(name, 0)}
+            for name in queue_names
+        },
+        run_enqueued=c["run_enqueued"],
+        run_started=c["run_started"],
+        run_done=c["run_done"],
+        run_error=c["run_error"],
+        run_compile_failed=c["run_compile_failed"],
+        run_timeout=c["run_timeout"],
+        run_avg_queue_wait_ms=_avg("run_queue_wait_ms_sum", "run_queue_wait_ms_count"),
+        run_avg_exec_ms=_avg("run_exec_ms_sum", "run_exec_ms_count"),
+        grade_enqueued=c["grade_enqueued"],
+        grade_started=c["grade_started"],
+        grade_done=c["grade_done"],
+        grade_error=c["grade_error"],
+        grade_compile_failed=c["grade_compile_failed"],
+        grade_timeout=c["grade_timeout"],
+        grade_avg_exec_ms=_avg("grade_exec_ms_sum", "grade_exec_ms_count"),
+        rate_limited=c["rate_limited"],
     )
 
 

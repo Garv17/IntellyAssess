@@ -1,28 +1,45 @@
 name: intellyassess
 
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql+asyncpg://exam:exam@postgres:5432/exam
-  DATABASE_URL_SYNC: postgresql+psycopg://exam:exam@postgres:5432/exam
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
-  JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+  JWT_SECRET: ${JWT_SECRET}
   UPLOAD_DIR: /app/uploads
   CORS_ORIGINS: '["http://localhost:5180","http://localhost:8080"]'
+  # Previously not wired through at all — .env overrides of these were silently
+  # ignored and every judge container ran on Settings' Python defaults regardless.
+  JUDGE_CPUS: ${JUDGE_CPUS:-1.0}
+  JUDGE_MEMORY_MB: ${JUDGE_MEMORY_MB:-256}
+  JUDGE_PIDS_LIMIT: ${JUDGE_PIDS_LIMIT:-64}
+  JUDGE_COMPILE_TIMEOUT_SECONDS: ${JUDGE_COMPILE_TIMEOUT_SECONDS:-20}
+  RUN_RATE_LIMIT_SECONDS: ${RUN_RATE_LIMIT_SECONDS:-20}
+  # Warm container pool (app/services/judge_pool.py) — ships disabled. Only turn
+  # this on after running the leak test in SCALING.md against this exact Docker
+  # daemon/images.
+  JUDGE_POOL_ENABLED: ${JUDGE_POOL_ENABLED:-false}
+  JUDGE_POOL_SIZE_PER_LANGUAGE: ${JUDGE_POOL_SIZE_PER_LANGUAGE:-3}
+  JUDGE_POOL_MEMORY_MB: ${JUDGE_POOL_MEMORY_MB:-512}
+  JUDGE_POOL_SLOT_TTL_SECONDS: ${JUDGE_POOL_SLOT_TTL_SECONDS:-240}
 
 x-backend-env-file: &backend-env-file
   - path: ./backend/.env
     required: false
 
 services:
+  # Explicit cpus/mem_limit on postgres/redis/backend below (all tunable via env)
+  # reserve their share of the box regardless of what the judge queues are doing —
+  # a Run/grading burst must degrade judge latency, never starve the API or DB.
   postgres:
     container_name: postgres
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: exam
-      POSTGRES_PASSWORD: exam
-      POSTGRES_DB: exam
+      POSTGRES_USER: $POSTGRES_USER
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+      POSTGRES_DB: $POSTGRES_DB
     command: >
       postgres -c max_connections=200
                -c shared_buffers=512MB
@@ -31,6 +48,8 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    cpus: ${POSTGRES_CPU_LIMIT:-1.0}
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1024m}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U exam -d exam"]
       interval: 5s
@@ -47,6 +66,8 @@ services:
       - redisdata:/data
     ports:
       - "6379:6379"
+    cpus: ${REDIS_CPU_LIMIT:-0.5}
+    mem_limit: ${REDIS_MEM_LIMIT:-640m}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -63,6 +84,8 @@ services:
       - uploads:/app/uploads
     ports:
       - "8000:8000"
+    cpus: ${BACKEND_CPU_LIMIT:-1.5}
+    mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,17 +116,21 @@ services:
       start_period: 30s
       retries: 3
 
-  # Judge runs on its own queue with bounded concurrency and needs the Docker socket
-  # to spawn sandbox containers. -c is capped at 3 (not the Celery default of "one
-  # per core") because this box only has 4 vCPUs shared with postgres/redis/backend/
-  # worker/beat/nginx — each sandbox container itself claims judge_cpus=1.0, so -c 8
-  # here would demand 8 cores' worth of judge alone and starve everything else.
-  # Give this service its own host in production instead of raising this number.
-  judge:
-    container_name: judge
+  # Judge is split into two queues so a grading spike (e.g. 200 attempts hitting
+  # their deadline at once) can never delay a student's interactive "Run" click:
+  # judge_run gets the larger share of the judge CPU budget, judge_grade the rest.
+  # Both need the Docker socket to spawn sandbox containers. Concurrency defaults
+  # are conservative for a 4-vCPU box (2+1 sandbox containers at judge_cpus=1.0
+  # each, leaving ~1 core for postgres/redis/backend/worker/beat) — raise
+  # JUDGE_RUN_CONCURRENCY/JUDGE_GRADE_CONCURRENCY via .env on a bigger box, or move
+  # these two services to a dedicated judge host pointed at this host's Redis/
+  # Postgres (see SCALING.md) rather than raising them past what this box's
+  # core count supports.
+  judge_run:
+    container_name: judge_run
     build: ./backend
     restart: unless-stopped
-    command: celery -A app.tasks.celery_app.celery_app worker -Q judge -c 3 --loglevel=info
+    command: celery -A app.tasks.celery_app.celery_app worker -Q judge_run -c ${JUDGE_RUN_CONCURRENCY:-2} --loglevel=info
     env_file: *backend-env-file
     environment: *backend-env
     user: root
@@ -115,7 +142,29 @@ services:
       redis:
         condition: service_healthy
     # See the worker service above: this overrides the inherited backend healthcheck
-    # with one that actually pings the judge worker in this container.
+    # with one that actually pings the worker running in this container.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+
+  judge_grade:
+    container_name: judge_grade
+    build: ./backend
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app.celery_app worker -Q judge_grade -c ${JUDGE_GRADE_CONCURRENCY:-1} --loglevel=info
+    env_file: *backend-env-file
+    environment: *backend-env
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK"]
       interval: 30s

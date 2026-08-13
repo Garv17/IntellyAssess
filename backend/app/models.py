@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -366,6 +367,14 @@ class ExamAttempt(Base, TimestampMixin):
         # The only race-free way to enforce one attempt per student per exam.
         UniqueConstraint("exam_id", "student_id", name="uq_attempt_exam_student"),
         Index("ix_attempts_exam_status", "exam_id", "status"),
+        # Speeds maintenance.auto_submit_expired's deadline sweep (migration seb3) —
+        # ix_attempts_exam_status doesn't cover deadline_at, so without this the
+        # sweep scans every in_progress row instead of just those near expiry.
+        Index(
+            "ix_attempts_deadline_in_progress",
+            "deadline_at",
+            postgresql_where=text("status = 'in_progress'"),
+        ),
     )
 
 

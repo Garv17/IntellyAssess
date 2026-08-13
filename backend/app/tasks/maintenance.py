@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.cache import ANSWERS, DIRTY
 from app.models import Answer, AttemptStatus, AuditLog, ExamAttempt, MCQOption, Question, QuestionType, Section
-from app.sync_db import publish_live_update_sync, session_scope, sync_redis
+from app.sync_db import incr_judge_counter_sync, publish_live_update_sync, session_scope, sync_redis
 from app.tasks.celery_app import celery_app
 
 log = logging.getLogger(__name__)
@@ -215,6 +215,7 @@ def auto_submit_expired() -> dict[str, int]:
         from app.tasks.judge_tasks import grade_attempt_coding
 
         for attempt_id in needs_coding_grade:
+            incr_judge_counter_sync("grade_enqueued")
             grade_attempt_coding.delay(attempt_id)
 
     if submitted:

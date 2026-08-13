@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # uncleanly. 15s keeps that exposure small without adding meaningful DB writes.
     autosave_flush_seconds: int = 15
     autosubmit_sweep_seconds: int = 30
+    # Defensive-only: clear_attempt() already deletes the answer buffer on every
+    # normal submit/auto-submit path. This just bounds an attempt that somehow never
+    # reaches either (crash before deadline_at was set, manual DB tampering) from
+    # leaving an orphaned Redis hash forever. Refreshed on every autosave, so it never
+    # expires a genuinely active exam.
+    answer_buffer_ttl_hours: int = 24
     heartbeat_seconds: int = 30
     # Grace period for in-flight requests that started just before the deadline.
     deadline_grace_seconds: int = 5
@@ -54,6 +60,37 @@ class Settings(BaseSettings):
     judge_cpus: float = 1.0
     judge_pids_limit: int = 64
     judge_max_code_bytes: int = 64 * 1024
+    # Separate from the per-test-case time_limit_ms: a pathological compile (e.g. a
+    # template-metaprogramming bomb) has no per-case `timeout -s KILL` wrapper around
+    # it today, so it can only be reaped once the container's own session-length
+    # `sleep` bound expires. This caps that exposure independently.
+    judge_compile_timeout_seconds: int = 20
+
+    # Judge rate limiting and dedup
+    run_rate_limit_seconds: int = 20
+    # Covers the Celery task's hard time limit (task_time_limit=180s in celery_app.py)
+    # plus a buffer, so the dedup key outlives any run it points to.
+    judge_run_dedup_ttl_seconds: int = 210
+
+    # Judge container pool (app/services/judge_pool.py) — ships disabled by default.
+    # Reusing containers across different students' code is only safe once the
+    # leak test in SCALING.md has been run against this exact Docker daemon/images;
+    # flip on per-environment via .env once that's confirmed, not globally here.
+    judge_pool_enabled: bool = False
+    # Per-language slot count, shared by judge_run + judge_grade (the lock key is
+    # keyed only on language). Size to their combined worst-case concurrency.
+    judge_pool_size_per_language: int = 3
+    # mem_limit is fixed at container creation and can't vary per-request the way
+    # the ephemeral path's max(problem.memory_limit_mb, judge_memory_mb) does — a
+    # pooled container is built once and reused across many different problems.
+    # A request needing more than this falls through to the ephemeral path for
+    # that one call rather than silently running under-provisioned.
+    judge_pool_memory_mb: int = 512
+    # Must stay comfortably above task_time_limit (180s, celery_app.py) so a slot's
+    # lock can never expire while the task holding it is still legitimately
+    # running — this TTL is a self-healing leak guard for an abnormally-killed
+    # worker, not the normal release path (checkin's explicit DEL is).
+    judge_pool_slot_ttl_seconds: int = 240
 
     # Uploads
     upload_dir: str = "./uploads"

@@ -27,16 +27,24 @@ FAIL_ERROR_RATE = 0.10  # a stage is a "break" if >=10% of its requests errored
 FAIL_LATENCY_MS = 2000  # ...or if any endpoint's p99 exceeds this
 
 
-async def run_stage(base_url: str, student_ids: list[str], duration: int) -> dict:
+async def run_stage(base_url: str, student_ids: list[str], duration: int, mode: str = "mixed") -> dict:
     loadtest.latencies.clear()
     loadtest.errors.clear()
+    loadtest.run_wall_ms.clear()
 
     limits = httpx.Limits(max_connections=len(student_ids) + 50, max_keepalive_connections=len(student_ids))
     started = time.perf_counter()
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0, limits=limits) as client:
-        await asyncio.gather(
-            *(loadtest.simulate_student(client, sid, duration) for sid in student_ids)
-        )
+        if mode == "run_spike":
+            # Test B/C at increasing scale: every student in this stage does exactly
+            # one Run, no stagger — a true simultaneous burst at this stage's size.
+            await asyncio.gather(
+                *(loadtest.simulate_run_once(client, sid, stagger_seconds=0.0) for sid in student_ids)
+            )
+        else:
+            await asyncio.gather(
+                *(loadtest.simulate_student(client, sid, duration) for sid in student_ids)
+            )
     elapsed = time.perf_counter() - started
 
     total = sum(len(v) for v in loadtest.latencies.values())
@@ -55,6 +63,7 @@ async def run_stage(base_url: str, student_ids: list[str], duration: int) -> dic
         "worst_p99_ms": worst_p99,
         "latencies": {k: list(v) for k, v in loadtest.latencies.items()},
         "errors": dict(loadtest.errors),
+        "run_wall_ms": list(loadtest.run_wall_ms),
     }
 
 
@@ -77,13 +86,20 @@ def print_stage_report(stage_n: int, result: dict) -> None:
         print("errors:")
         for key, count in sorted(result["errors"].items(), key=lambda kv: -kv[1]):
             print(f"  {key}: {count}")
+    if result["run_wall_ms"]:
+        wall = result["run_wall_ms"]
+        print(
+            f"run wall time, n={len(wall)}: mean={statistics.fmean(wall):.0f}ms "
+            f"p50={loadtest.percentile(wall, 50):.0f}ms p95={loadtest.percentile(wall, 95):.0f}ms "
+            f"p99={loadtest.percentile(wall, 99):.0f}ms"
+        )
 
 
 def stage_failed(result: dict) -> bool:
     return result["error_rate"] >= FAIL_ERROR_RATE or result["worst_p99_ms"] >= FAIL_LATENCY_MS
 
 
-async def main(stages: list[int], stage_duration: int, base_url: str, offset: int) -> None:
+async def main(stages: list[int], stage_duration: int, base_url: str, offset: int, mode: str = "mixed") -> None:
     summary: list[dict] = []
     cursor = offset
 
@@ -91,7 +107,7 @@ async def main(stages: list[int], stage_duration: int, base_url: str, offset: in
         student_ids = [f"STU{i:04d}" for i in range(cursor + 1, cursor + stage_n + 1)]
         cursor += stage_n
 
-        result = await run_stage(base_url, student_ids, stage_duration)
+        result = await run_stage(base_url, student_ids, stage_duration, mode)
         print_stage_report(stage_n, result)
         summary.append({"stage": stage_n, **result})
 
@@ -122,6 +138,13 @@ if __name__ == "__main__":
     parser.add_argument("--stage-duration", type=int, default=45, help="active seconds per student per stage")
     parser.add_argument("--base-url", default=loadtest.BASE_URL)
     parser.add_argument("--offset", type=int, default=0, help="skip the first N students in the pool")
+    parser.add_argument(
+        "--mode",
+        choices=["mixed", "run_spike"],
+        default="mixed",
+        help="'run_spike' ramps Test B/C (simultaneous Run bursts) instead of the default "
+        "autosave/heartbeat/nav/submit mix",
+    )
     args = parser.parse_args()
     stage_list = [int(s) for s in args.stages.split(",")]
-    asyncio.run(main(stage_list, args.stage_duration, args.base_url, args.offset))
+    asyncio.run(main(stage_list, args.stage_duration, args.base_url, args.offset, args.mode))

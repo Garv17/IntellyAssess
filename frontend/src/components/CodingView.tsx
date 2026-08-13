@@ -210,7 +210,7 @@ function GenericEditorPane({ question, answer, onChange }: CodingViewProps) {
   };
 
   useEffect(() => () => {
-    if (pollRef.current) window.clearInterval(pollRef.current);
+    if (pollRef.current) window.clearTimeout(pollRef.current);
   }, []);
 
   const runCode = async () => {
@@ -227,21 +227,25 @@ function GenericEditorPane({ question, answer, onChange }: CodingViewProps) {
             ? { customParams }
             : { customStdin: customInput },
       );
-      // Judging is queued, so poll rather than blocking a request for seconds.
-      pollRef.current = window.setInterval(async () => {
+      // Judging is queued, so poll rather than blocking a request for seconds. Jittered
+      // (1000-1400ms) instead of a fixed interval so many students clicking Run around
+      // the same moment don't all poll in lockstep.
+      const poll = async () => {
         try {
           const result = await api.codeRun(run_id);
           setRun(result);
           if (result.status === 'done' || result.status === 'error') {
-            if (pollRef.current) window.clearInterval(pollRef.current);
             setRunning(false);
             setBottomTab(result.error ? 'console' : 'output');
+            return;
           }
         } catch {
-          if (pollRef.current) window.clearInterval(pollRef.current);
           setRunning(false);
+          return;
         }
-      }, 1200);
+        pollRef.current = window.setTimeout(poll, 1000 + Math.random() * 400);
+      };
+      pollRef.current = window.setTimeout(poll, 1000 + Math.random() * 400);
     } catch (err) {
       setRunning(false);
       setBottomTab('console');

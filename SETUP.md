@@ -17,12 +17,20 @@ docker version
 
 If this errors, the daemon isn't up yet. Don't continue until it works.
 
-## 2. Set a signing key
+## 2. Set the environment
 
 ```powershell
-cd C:\Users\BAPS\Downloads\Exam_Plateform
-$env:JWT_SECRET = python -c "import secrets; print(secrets.token_urlsafe(48))"
+Copy-Item .env.example .env
 ```
+
+Open `.env` and replace `JWT_SECRET` with a real value:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+`docker compose` reads this root `.env` itself (separate from `backend/.env`) to fill in
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `JWT_SECRET` in `docker-compose.yml`.
 
 ## 3. Start the stack
 
@@ -30,8 +38,8 @@ $env:JWT_SECRET = python -c "import secrets; print(secrets.token_urlsafe(48))"
 docker compose up --build -d
 ```
 
-First build: 3–6 minutes. Starts `postgres`, `redis`, `api`, `worker`, `beat`, `judge`,
-`frontend`.
+First build: 3–6 minutes. Starts `postgres`, `redis`, `api`, `worker`, `beat`,
+`judge_run`, `judge_grade`, `frontend`.
 
 ## 4. Wait for it to be healthy
 
@@ -149,7 +157,7 @@ docker compose up --build -d    # start again
 | `/ready` → `degraded` | Redis down: `docker compose up -d redis`. Exam still works, slower |
 | `answers` table stays empty | `beat` container not running — see step 8 |
 | Exams don't auto-submit at 0:00 | Same cause: `beat` not running |
-| "Judge is temporarily unavailable" | `docker compose ps judge` — judge worker down |
+| "Judge is temporarily unavailable" | `docker compose ps judge_run judge_grade` — judge worker down |
 | First code run hangs ~60s | Image downloading — step 6 |
 | `JWT_SECRET is still the default` | Step 2 didn't take effect |
 | Logged out / 401 mid-exam | Someone logged in as the same student ID elsewhere. One active session per student is by design — don't test with a student who's already signed in |
@@ -223,8 +231,12 @@ Not optional: without `beat`, answers never persist and exams never auto-submit.
 ```powershell
 celery -A app.tasks.celery_app.celery_app worker -Q default --pool=threads -c 4 --loglevel=info
 celery -A app.tasks.celery_app.celery_app beat --loglevel=info
-celery -A app.tasks.celery_app.celery_app worker -Q judge --pool=threads -c 4 --loglevel=info
+celery -A app.tasks.celery_app.celery_app worker -Q judge_run,judge_grade --pool=threads -c 4 --loglevel=info
 ```
+
+Local dev runs both judge queues in one worker for simplicity — Docker Compose is
+where the run/grade priority split (see [SCALING.md](SCALING.md)) actually
+matters, since that's the setup meant to hold up under real exam load.
 
 **Frontend** — fifth terminal:
 

@@ -264,7 +264,7 @@ The design principle throughout: **degrade the expensive features, never the exa
 
 - 4 uvicorn workers per API container, 2 containers behind Nginx. Each worker handles ~30 rps of the auto-save path comfortably; this is ~4× headroom on the 63 rps estimate.
 - Postgres: `max_connections=200`, SQLAlchemy pool of 20/worker with `pool_pre_ping`. Read replica for analytics and export so a heavy report can't slow the exam.
-- Celery: one queue for `default` (flush, sweep, grade, export), one for `judge` with concurrency 8 on a dedicated host with Docker socket access.
+- Celery: one queue for `default` (flush, sweep, export), and `judge_run`/`judge_grade` split so a deadline grading spike can't delay interactive Run clicks — both on a dedicated host with Docker socket access, concurrency raised via `JUDGE_RUN_CONCURRENCY`/`JUDGE_GRADE_CONCURRENCY` to match that host's core count (see [SCALING.md](SCALING.md)).
 - Observability: structured JSON logs, `/health` and `/ready`, Prometheus metrics on auto-save p99, flush lag, judge queue depth, and active attempts. Flush lag and queue depth are the two numbers that predict an incident.
 
 **Pre-exam checklist:** load-test at 1.5× expected concurrency, verify the auto-submit sweeper against a seeded overdue attempt, confirm Redis AOF is on, and take a Postgres snapshot immediately before the exam window opens.

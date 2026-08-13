@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -336,7 +337,46 @@ async def run_code(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Test case not found")
         test_case_id = case.id
 
+    # Collapses double-clicks and frontend/network retries onto one job: an identical
+    # request (same attempt+question+language+code+mode+target) within the task's max
+    # lifetime returns the already-queued/running run instead of creating a duplicate.
+    dedup_key = hashlib.sha256(
+        "|".join(
+            [
+                str(attempt.id),
+                str(payload.question_id),
+                payload.language,
+                payload.code_text,
+                mode.value,
+                str(test_case_id),
+                str(payload.custom_stdin),
+                json.dumps(payload.custom_params),
+            ]
+        ).encode()
+    ).hexdigest()
+    run_id = uuid.uuid4()
+    existing_run_id = await cache.claim_or_get_run_dedup(
+        dedup_key, str(run_id), ttl_seconds=settings.judge_run_dedup_ttl_seconds
+    )
+    if existing_run_id is not None:
+        existing = await db.get(JudgeRun, uuid.UUID(existing_run_id))
+        if existing is not None:
+            return CodeRunAccepted(run_id=existing.id, status=existing.status)
+        # The claimed run_id's row was never created (e.g. that request got
+        # rate-limited after claiming the dedup slot) — fall through and create it
+        # under the same pre-claimed id so the dedup key self-heals.
+
+    if not await cache.claim_run_cooldown(str(attempt.id), settings.run_rate_limit_seconds):
+        await cache.incr_judge_counter("rate_limited")
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Please wait a few seconds before running again "
+            f"(limit: 1 run every {settings.run_rate_limit_seconds}s). Your code is already saved.",
+            headers={"Retry-After": str(settings.run_rate_limit_seconds)},
+        )
+
     run = JudgeRun(
+        id=run_id,
         attempt_id=attempt.id,
         question_id=payload.question_id,
         language=payload.language,
@@ -371,6 +411,7 @@ async def run_code(
 
     from app.tasks.judge_tasks import judge_run  # local import avoids a circular import
 
+    await cache.incr_judge_counter("run_enqueued")
     judge_run.delay(str(run.id))
     return CodeRunAccepted(run_id=run.id, status=run.status)
 
@@ -437,6 +478,7 @@ async def submit_exam(
 
         from app.tasks.judge_tasks import grade_attempt_coding
 
+        await cache.incr_judge_counter("grade_enqueued")
         grade_attempt_coding.delay(str(attempt.id))
 
     return await _receipt(db, attempt)

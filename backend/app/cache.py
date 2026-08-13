@@ -17,6 +17,7 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 _pool: aioredis.Redis | None = None
+_broker_pool: aioredis.Redis | None = None
 
 # ---- key layout ------------------------------------------------------------
 ANSWERS = "attempt:{attempt_id}:answers"  # hash: question_id -> json payload
@@ -26,6 +27,9 @@ DENYLIST = "jti:denied:{jti}"  # string: "1"
 SESSION = "student:{student_id}:session"  # string: active jti (single-session)
 MAGIC_COOLDOWN = "magic:cooldown:{student_id}"  # string: "1"
 LIVE_CHANNEL = "live:{exam_id}"  # pub/sub: marker only, no payload
+RUN_COOLDOWN = "run:cooldown:{attempt_id}"  # string: "1" — per-attempt Run rate limit
+RUN_DEDUP = "run:dedup:{dedup_key}"  # string: run_id — collapses duplicate/retried runs
+JUDGE_COUNTER = "judge:counter:{name}"  # string: incrementing counter, see incr_judge_counter
 
 
 def redis() -> aioredis.Redis:
@@ -38,10 +42,38 @@ def redis() -> aioredis.Redis:
 
 
 async def close_redis() -> None:
-    global _pool
+    global _pool, _broker_pool
     if _pool is not None:
         await _pool.aclose()
         _pool = None
+    if _broker_pool is not None:
+        await _broker_pool.aclose()
+        _broker_pool = None
+
+
+def _broker_redis() -> aioredis.Redis:
+    """Separate client on the Celery broker's Redis DB (celery_broker_url, distinct
+    from redis_url) — only used to read queue depth for the admin metrics endpoint."""
+    global _broker_pool
+    if _broker_pool is None:
+        _broker_pool = aioredis.from_url(
+            settings.celery_broker_url, encoding="utf-8", decode_responses=True, max_connections=5
+        )
+    return _broker_pool
+
+
+async def get_queue_depths(queue_names: list[str]) -> dict[str, int]:
+    """Tasks still waiting in the broker, not yet claimed by any worker. Celery's
+    Redis transport stores each queue as a plain list keyed by queue name."""
+    try:
+        pipe = _broker_redis().pipeline()
+        for name in queue_names:
+            pipe.llen(name)
+        lengths = await pipe.execute()
+        return dict(zip(queue_names, lengths, strict=True))
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis get_queue_depths failed: %s", exc)
+        return dict.fromkeys(queue_names, 0)
 
 
 async def ping() -> bool:
@@ -95,8 +127,11 @@ async def buffer_answers(attempt_id: str, answers: dict[str, dict]) -> bool:
         return True
     try:
         payload = {qid: json.dumps(body) for qid, body in answers.items()}
+        key = ANSWERS.format(attempt_id=attempt_id)
         pipe = redis().pipeline()
-        pipe.hset(ANSWERS.format(attempt_id=attempt_id), mapping=payload)
+        pipe.hset(key, mapping=payload)
+        # Defensive-only bound on an orphaned buffer — see Settings.answer_buffer_ttl_hours.
+        pipe.expire(key, settings.answer_buffer_ttl_hours * 3600)
         pipe.sadd(DIRTY, attempt_id)
         await pipe.execute()
         return True
@@ -160,6 +195,63 @@ async def start_magic_cooldown(student_pk: str, ttl_seconds: int) -> bool:
     except Exception as exc:  # pragma: no cover
         log.warning("redis start_magic_cooldown failed: %s", exc)
         return True
+
+
+# ---------------------------------------------------------------- run rate limit
+
+
+async def claim_run_cooldown(attempt_id: str, cooldown_seconds: int) -> bool:
+    """Atomically claims the per-attempt Run cooldown slot. True means the caller may
+    enqueue a run now; False means one was enqueued too recently. Fails open (allows
+    the run) if Redis is down — a dead Redis must slow abuse protection, not block
+    every student's Run button mid-exam."""
+    try:
+        key = RUN_COOLDOWN.format(attempt_id=attempt_id)
+        return bool(await redis().set(key, "1", ex=max(cooldown_seconds, 1), nx=True))
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis claim_run_cooldown failed: %s", exc)
+        return True
+
+
+# --------------------------------------------------------------------- run dedup
+
+
+async def claim_or_get_run_dedup(dedup_key: str, run_id: str, ttl_seconds: int) -> str | None:
+    """Atomically claims dedup_key -> run_id if no identical run is already in
+    flight (returns None, meaning the caller's run_id is the one to use), or returns
+    the run_id an earlier identical request (double-click, frontend/network retry)
+    already claimed. Fails open (treats as non-duplicate) if Redis is down."""
+    try:
+        key = RUN_DEDUP.format(dedup_key=dedup_key)
+        claimed = await redis().set(key, run_id, ex=max(ttl_seconds, 1), nx=True)
+        if claimed:
+            return None
+        return await redis().get(key)
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis claim_or_get_run_dedup failed: %s", exc)
+        return None
+
+
+# ------------------------------------------------------------------ judge metrics
+
+
+async def incr_judge_counter(name: str, amount: int = 1) -> None:
+    """Best-effort counter for the admin judge-metrics endpoint. Never raises —
+    losing a counter increment must not fail the judge task or request it's in."""
+    try:
+        await redis().incrby(JUDGE_COUNTER.format(name=name), amount)
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis incr_judge_counter(%s) failed: %s", name, exc)
+
+
+async def get_judge_counters(names: list[str]) -> dict[str, int]:
+    try:
+        keys = [JUDGE_COUNTER.format(name=name) for name in names]
+        values = await redis().mget(keys)
+        return {name: int(value) if value else 0 for name, value in zip(names, values, strict=True)}
+    except Exception as exc:  # pragma: no cover
+        log.warning("redis get_judge_counters failed: %s", exc)
+        return dict.fromkeys(names, 0)
 
 
 # ---------------------------------------------------------- live monitor pub/sub

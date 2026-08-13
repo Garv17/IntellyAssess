@@ -19,10 +19,16 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_time_limit=180,
     task_soft_time_limit=150,
-    # Judging is CPU-bound and hostile; it gets its own queue so a burst of runs
-    # can never delay the answer flush or the auto-submit sweeper.
+    # Judging is CPU-bound and hostile; it gets its own queues so a burst of runs
+    # can never delay the answer flush or the auto-submit sweeper. judge.run (the
+    # interactive "Run" click) and judge.grade_attempt/judge.preview_sql (final
+    # grading and admin preview, both non-interactive) are split further: a deadline
+    # spike enqueuing hundreds of grade_attempt tasks must not starve the students
+    # still clicking Run in other, still-open exams on the same box.
     task_routes={
-        "judge.*": {"queue": "judge"},
+        "judge.run": {"queue": "judge_run"},
+        "judge.grade_attempt": {"queue": "judge_grade"},
+        "judge.preview_sql": {"queue": "judge_grade"},
         "maintenance.*": {"queue": "default"},
         "mailer.*": {"queue": "default"},
     },

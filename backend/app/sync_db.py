@@ -12,6 +12,7 @@ import redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.cache import JUDGE_COUNTER
 from app.config import settings
 
 sync_engine = create_engine(
@@ -27,6 +28,16 @@ def publish_live_update_sync(exam_id: str) -> None:
     (maintenance.py) which have no event loop. Same channel, same Redis instance."""
     try:
         sync_redis.publish(f"live:{exam_id}", "changed")
+    except Exception:
+        pass
+
+
+def incr_judge_counter_sync(name: str, amount: int = 1) -> None:
+    """Sync counterpart to app.cache.incr_judge_counter/get_judge_counters, for Celery
+    call sites (judge_tasks.py, maintenance.py) which have no event loop. Writes to the
+    same `judge:counter:*` keyspace the admin metrics endpoint reads asynchronously."""
+    try:
+        sync_redis.incrby(JUDGE_COUNTER.format(name=name), amount)
     except Exception:
         pass
 
