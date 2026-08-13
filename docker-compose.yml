@@ -1,19 +1,19 @@
 name: intellyassess
-
+ 
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql+asyncpg://exam:exam@postgres:5432/exam
-  DATABASE_URL_SYNC: postgresql+psycopg://exam:exam@postgres:5432/exam
+  DATABASE_URL: postgresql+asyncpg://exam:${POSTGRES_PASSWORD:-exam}@postgres:5432/exam
+  DATABASE_URL_SYNC: postgresql+psycopg://exam:${POSTGRES_PASSWORD:-exam}@postgres:5432/exam
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
   UPLOAD_DIR: /app/uploads
-  CORS_ORIGINS: '["http://localhost:5180","http://localhost:8080"]'
-
+  CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:5180","http://localhost:8080"]'}
+ 
 x-backend-env-file: &backend-env-file
   - path: ./backend/.env
     required: false
-
+ 
 services:
   postgres:
     container_name: postgres
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: exam
-      POSTGRES_PASSWORD: exam
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-exam}
       POSTGRES_DB: exam
     command: >
       postgres -c max_connections=200
@@ -39,7 +39,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
+ 
   redis:
     container_name: redis
     image: redis:7-alpine
@@ -57,7 +57,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
+ 
   backend:
     container_name: backend
     build: ./backend
@@ -67,13 +67,13 @@ services:
     volumes:
       - uploads:/app/uploads
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-
+ 
   worker:
     container_name: worker
     build: ./backend
@@ -97,7 +97,7 @@ services:
       timeout: 15s
       start_period: 30s
       retries: 3
-
+ 
   ai-worker:
     container_name: ai-worker
     build: ./backend
@@ -117,7 +117,7 @@ services:
       timeout: 15s
       start_period: 30s
       retries: 3
-
+ 
   beat:
     container_name: beat
     build: ./backend
@@ -132,18 +132,39 @@ services:
         condition: service_healthy
     healthcheck:
       disable: true
-
+ 
   frontend:
     container_name: frontend
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "5180:80"
+      - "127.0.0.1:5180:80"
     depends_on:
       backend:
         condition: service_healthy
-
+ 
+  caddy:
+    container_name: caddy
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_started
+ 
 volumes:
   pgdata:
   redisdata:
   uploads:
+  caddy_data:
+  caddy_config:
+ 
