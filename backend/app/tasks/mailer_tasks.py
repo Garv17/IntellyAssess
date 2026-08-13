@@ -1,5 +1,5 @@
 """Bulk magic-link sends. Runs on the default queue — this is outbound HTTP to
-Brevo, not CPU work, so it doesn't need the judge queue's isolation."""
+Brevo, not CPU work, so it runs on the default queue."""
 
 from __future__ import annotations
 

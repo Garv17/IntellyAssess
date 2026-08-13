@@ -152,24 +152,8 @@ export const api = {
     request<SaveAck>('/api/exam/answers', { method: 'PATCH', body: { answers } }),
   heartbeat: (focusLost = false) =>
     request<Heartbeat>(`/api/exam/heartbeat?focus_lost=${focusLost}`, { method: 'POST' }),
-  runCode: (
-    question_id: string,
-    language: string,
-    code_text: string,
-    target: { testCaseId?: string; customStdin?: string; customParams?: unknown[] } = {},
-  ) =>
-    request<{ run_id: string }>('/api/exam/code/run', {
-      method: 'POST',
-      body: {
-        question_id,
-        language,
-        code_text,
-        test_case_id: target.testCaseId,
-        custom_stdin: target.customStdin,
-        custom_params: target.customParams,
-      },
-    }),
-  codeRun: (runId: string) => request<CodeRun>(`/api/exam/code/run/${runId}`),
+  // There is deliberately no runCode/codeRun here: coding questions are
+  // submission-only, and the server has no execution endpoint to call.
   submit: (auto = false) =>
     request<Receipt>(`/api/exam/submit?auto=${auto}`, { method: 'POST' }),
 
@@ -220,11 +204,6 @@ export const api = {
     request<{ code: string }>('/api/admin/coding/preview-boilerplate', {
       method: 'POST',
       body: { language, function_name: functionName, return_type: returnType, parameters },
-    }),
-  previewSql: (setupSql: string, querySql: string) =>
-    request<{ stdout: string; error: string | null }>('/api/admin/sql/preview', {
-      method: 'POST',
-      body: { setup_sql: setupSql, query_sql: querySql },
     }),
   updateDiGroup: (groupId: string, payload: unknown) =>
     request<DIGroupDetail>(`/api/admin/di-groups/${groupId}`, { method: 'PATCH', body: payload }),
@@ -333,6 +312,29 @@ export const api = {
     request<QuestionAdminSummary>(`/api/admin/questions/${questionId}/copy`, {
       method: 'POST',
       body: { target_section_id: targetSectionId },
+    }),
+
+  codingSubmissions: (filters: CodingSubmissionFilters = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== '' && value !== false) params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return request<CodingSubmissionPage>(`/api/admin/coding-submissions${qs ? `?${qs}` : ''}`);
+  },
+  codingSubmission: (submissionId: string) =>
+    request<CodingSubmissionDetail>(`/api/admin/coding-submissions/${submissionId}`),
+  gradeCodingSubmission: (
+    submissionId: string,
+    payload: { final_score: number; admin_comment?: string | null; finalize: boolean },
+  ) =>
+    request<CodingSubmissionDetail>(`/api/admin/coding-submissions/${submissionId}`, {
+      method: 'PATCH',
+      body: payload,
+    }),
+  reevaluateCodingSubmission: (submissionId: string) =>
+    request<CodingSubmissionDetail>(`/api/admin/coding-submissions/${submissionId}/re-evaluate`, {
+      method: 'POST',
     }),
 };
 
@@ -566,24 +568,6 @@ export interface Heartbeat {
   status: string;
   server_time: string;
 }
-export interface CodeRunResult {
-  index: number;
-  passed: boolean;
-  stdin: string | null;
-  expected: string | null;
-  actual: string | null;
-  stderr: string | null;
-  time_ms: number | null;
-  verdict: string;
-}
-export interface CodeRun {
-  run_id: string;
-  status: 'queued' | 'running' | 'done' | 'error';
-  passed: number;
-  total: number;
-  results: CodeRunResult[];
-  error: string | null;
-}
 export interface Receipt {
   attempt_id: string;
   status: string;
@@ -752,24 +736,104 @@ export interface DiContext {
   passage_md: string | null;
   image_url: string | null;
 }
-export interface CodingCaseReview {
-  index: number;
-  passed: boolean;
-  stdin: string | null;
-  expected: string | null;
-  actual: string | null;
-  stderr: string | null;
-  time_ms: number | null;
-  verdict: string;
-}
+export type EvaluationStatus =
+  | 'pending'
+  | 'ai_evaluating'
+  | 'ai_evaluated'
+  | 'ai_failed'
+  | 'admin_reviewed'
+  | 'finalized';
+
 export interface CodingReview {
+  submission_id: string | null;
   language: string;
   code_text: string;
-  status: string;
-  passed: number;
+  status: EvaluationStatus | null;
+  ai_score: number | null;
+  final_score: number | null;
+  max_marks: number;
+  manual_review_recommended: boolean;
+}
+
+// -------------------------------------------------------- coding evaluation
+
+export interface CodingSubmissionFilters {
+  exam_id?: string;
+  status?: EvaluationStatus;
+  needs_review?: boolean;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+export interface CodingSubmissionListItem {
+  id: string;
+  attempt_id: string;
+  question_id: string;
+  student_name: string;
+  student_number: string;
+  exam_id: string;
+  exam_title: string;
+  language: string;
+  submitted_at: string;
+  status: EvaluationStatus;
+  // What the question is worth (the final_score scale).
+  max_marks: number;
+  // ai_score is on the rubric's scale, which need not equal max_marks.
+  ai_score: number | null;
+  rubric_max_marks: number;
+  final_score: number | null;
+  manual_review_recommended: boolean;
+}
+export interface CodingSubmissionPage {
+  items: CodingSubmissionListItem[];
   total: number;
-  score: number;
-  cases: CodingCaseReview[];
+  page: number;
+  page_size: number;
+}
+export interface RubricCriterion {
+  key: string;
+  description: string;
+  max_marks: number;
+  awarded: number | null;
+  // Why this criterion scored what it did. Null on evaluations recorded before
+  // per-criterion justifications existed.
+  justification: string | null;
+}
+export interface CodingSubmissionDetail {
+  id: string;
+  attempt_id: string;
+  question_id: string;
+  language: string;
+  code_text: string;
+  submitted_at: string;
+  max_marks: number;
+  status: EvaluationStatus;
+
+  ai_score: number | null;
+  ai_rubric_scores: Record<string, number> | null;
+  ai_rubric_justifications: Record<string, string> | null;
+  ai_reasoning: string | null;
+  ai_strengths: string[] | null;
+  ai_issues: string[] | null;
+  ai_confidence: number | null;
+  ai_requires_manual_review: boolean;
+  ai_model: string | null;
+  ai_evaluated_at: string | null;
+  ai_error: string | null;
+
+  final_score: number | null;
+  admin_comment: string | null;
+  finalized_at: string | null;
+
+  student_name: string;
+  student_number: string;
+  exam_title: string;
+  question_body_md: string;
+  statement_md: string;
+  constraints_md: string | null;
+  rubric_max_marks: number;
+  rubric: RubricCriterion[];
+  manual_review_recommended: boolean;
 }
 export interface QuestionReview {
   question_id: string;
@@ -778,7 +842,8 @@ export interface QuestionReview {
   body_md: string;
   marks: number;
   negative_marks: number;
-  status: 'correct' | 'incorrect' | 'skipped';
+  // 'pending' is coding-only: awaiting an admin's final score.
+  status: 'correct' | 'incorrect' | 'skipped' | 'pending';
   student_answer: string | null;
   correct_answer: string | null;
   marks_awarded: number;

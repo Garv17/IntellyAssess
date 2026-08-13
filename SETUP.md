@@ -24,16 +24,55 @@ cd C:\Users\BAPS\Downloads\Exam_Plateform
 $env:JWT_SECRET = python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-## 3. Start the stack
+## 3. Set a model API key (optional)
+
+Coding answers are marked by an LLM reached over a generic OpenAI-compatible
+`/chat/completions` endpoint, so any compatible provider works. It defaults to OpenAI's
+`gpt-4o-mini`. Get a key from https://platform.openai.com/api-keys and put it in
+`backend\.env` (gitignored, read by the backend and worker containers only) or export
+it before starting the stack:
+
+```powershell
+$env:OPENAI_API_KEY = "sk-...."                       # OpenAI key
+$env:OPENAI_MODEL = "gpt-4o-mini"
+$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
+```
+
+To use Gemini's OpenAI-compat endpoint instead, set
+`OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai` and
+`OPENAI_MODEL=gemini-2.5-flash` with a key from https://aistudio.google.com/apikey.
+
+**Two things measured on a 16-submission benchmark, worth knowing before you pick:**
+
+- `gemini-flash-lite-latest` scored a SQL query that returns *zero rows* (a `NOT IN`
+  over a NULL-bearing column) at 10/10 on three runs out of three. `gemini-2.5-flash`
+  and `gemini-flash-latest` both caught it. Don't grade SQL with flash-lite.
+- Gemini's **free** tier is far too small for a cohort: 20 requests/day was the
+  observed cap for `gemini-2.5-flash` on a free key, against roughly 1,050 requests
+  for a 150-student, 6-question sitting (~3,600 input + ~450 output tokens each).
+  gpt-4o-mini at Tier 1 allows 10,000/day and costs about $0.86 per sitting.
+
+`OPENAI_MAX_OUTPUT_TOKENS` (default 1500) is declared on every request on purpose:
+OpenAI charges the output budget against your per-minute token limit whether it is
+used or not, and leaving it unset can reserve the model's full 16k maximum and
+throttle a whole cohort's grading to a trickle.
+
+**Skipping this doesn't break anything.** Without a key — or with
+`AI_EVALUATION_ENABLED=false`, or during a provider outage — submissions still save; they
+just land on `AI_FAILED` in **Admin → Coding Evaluation** for an admin to grade by hand.
+The AI produces a recommendation, never a mark: only a score an admin finalizes counts
+toward the exam total.
+
+## 4. Start the stack
 
 ```powershell
 docker compose up --build -d
 ```
 
-First build: 3–6 minutes. Starts `postgres`, `redis`, `api`, `worker`, `beat`, `judge`,
-`frontend`.
+First build: 3–6 minutes. Starts seven containers: `postgres`, `redis`, `backend`,
+`worker`, `ai-worker`, `beat`, `frontend`.
 
-## 4. Wait for it to be healthy
+## 5. Wait for it to be healthy
 
 ```powershell
 docker compose ps                    # wait for postgres + redis = (healthy)
@@ -42,7 +81,7 @@ curl http://localhost:8000/ready
 
 Expect `{"status":"ok","checks":{"database":"up","redis":"up"}}`.
 
-## 5. Create tables + demo data
+## 6. Create tables + demo data
 
 ```powershell
 docker compose exec backend python -m scripts.seed --students 25
@@ -54,18 +93,6 @@ Prints the admin login and the demo student IDs. Safe to re-run.
 |---|---|
 | Admin | `admin@example.com` / `Admin@123` |
 | Student | no password — magic link only, see step 7 (demo student: `STU0001`, `stu0001@example.com`) |
-
-## 6. Pre-pull the judge images
-
-Skip this and the first "Run code" click in a given language hangs ~60s while Docker
-downloads its image.
-
-```powershell
-docker pull python:3.11-alpine
-```
-
-Add `node:20-alpine`, `gcc:13`, `eclipse-temurin:21-jdk-alpine`, and `nouchka/sqlite3:latest`
-too if the exam allows JavaScript, C/C++, Java, or SQL.
 
 ## 7. Sit the demo exam
 
@@ -81,8 +108,10 @@ there's no need for a real mailbox: the API hands the token straight back.
 4. Click **Start exam** — the 60-minute timer starts server-side now.
 5. Answer an MCQ → indicator shows `Saving…` then `Saved`.
 6. **Press F5** — your answer and the correct remaining time come back.
-7. Coding section → **Run against samples** → per-case pass/fail.
-8. **Submit** → you get a confirmation screen.
+7. Coding section → write a solution. There is no Run button: code is never executed,
+   only submitted and evaluated afterwards.
+8. **Submit** → you get a confirmation screen. Coding answers are frozen at this point
+   and queued for evaluation; they show up under **Admin → Coding Evaluation**.
 
 In a real (non-development) deployment there is no `dev_token`: the link is only ever
 delivered by email, via Brevo.
@@ -110,6 +139,8 @@ stays alive), log in as `admin@example.com` / `Admin@123`.
 - **Monitor** — per-student rows, pushed live over WebSocket. Answered counts can still
   lag up to `AUTOSAVE_FLUSH_SECONDS` (15s by default) behind what the student actually
   typed, since that count only reflects what's been flushed to Postgres; that's expected.
+- **Coding Evaluation** — every submitted coding answer with the AI's recommended score
+  and reasoning. Nothing here counts until you finalize it.
 - **Export** — downloads results as XLSX.
 
 ## 10. Build your own exam
@@ -149,8 +180,8 @@ docker compose up --build -d    # start again
 | `/ready` → `degraded` | Redis down: `docker compose up -d redis`. Exam still works, slower |
 | `answers` table stays empty | `beat` container not running — see step 8 |
 | Exams don't auto-submit at 0:00 | Same cause: `beat` not running |
-| "Judge is temporarily unavailable" | `docker compose ps judge` — judge worker down |
-| First code run hangs ~60s | Image downloading — step 6 |
+| Coding submissions stuck at `pending` | `docker compose ps ai-worker` — the AI worker is down, or `AI_EVALUATION_ENABLED=false`. Submissions are safe either way; grade them by hand, or start the worker and hit **Re-evaluate** |
+| Coding submissions land on `ai_failed` | Missing/invalid `OPENAI_API_KEY`, or the model provider unreachable. The reason is on the submission's review screen. Fix the key and **Re-evaluate**, or grade by hand — step 3 |
 | `JWT_SECRET is still the default` | Step 2 didn't take effect |
 | Logged out / 401 mid-exam | Someone logged in as the same student ID elsewhere. One active session per student is by design — don't test with a student who's already signed in |
 | `429 Too Many Requests` on login | Login rate limit (5/min/IP). Wait a minute |
@@ -182,8 +213,7 @@ docker compose exec backend python -m scripts.seed --students 25
       no TLS and no rate limiting on the API, and Postgres/Redis reachable from outside
       the host. Only `frontend` (5180, which proxies `/api/`) needs to stay published
 - [ ] Put TLS in front — the compose file serves plain HTTP
-- [ ] Load test at 1.5× expected concurrency:
-      `python -m scripts.loadtest --students 400 --duration 300`
+- [ ] Load test at 1.5× expected concurrency with your own tooling
       (watch auto-save p99; target <100 ms)
 - [ ] Confirm `beat` is running — the most common exam-day failure
 - [ ] Snapshot Postgres right before the window opens
@@ -215,7 +245,8 @@ uvicorn app.main:app --reload
 ```
 
 **Workers** — three more terminals, each with the venv activated and `cd backend`.
-Not optional: without `beat`, answers never persist and exams never auto-submit.
+Not optional: without `beat`, answers never persist and exams never auto-submit. The `ai`
+worker is optional — without it, coding submissions still save and wait at `pending`.
 
 > **`--pool=threads` is required on Windows.** Celery's default prefork pool starts
 > cleanly and then processes nothing. Drop the flag on Linux/macOS.
@@ -223,7 +254,7 @@ Not optional: without `beat`, answers never persist and exams never auto-submit.
 ```powershell
 celery -A app.tasks.celery_app.celery_app worker -Q default --pool=threads -c 4 --loglevel=info
 celery -A app.tasks.celery_app.celery_app beat --loglevel=info
-celery -A app.tasks.celery_app.celery_app worker -Q judge --pool=threads -c 4 --loglevel=info
+celery -A app.tasks.celery_app.celery_app worker -Q ai --pool=threads -c 4 --loglevel=info
 ```
 
 **Frontend** — fifth terminal:

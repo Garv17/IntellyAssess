@@ -1,7 +1,9 @@
 # Online Examination Platform
 
 Real-time examination platform for 300–400 concurrent students, supporting MCQ, Data
-Interpretation, and sandboxed coding assessments.
+Interpretation, and coding assessments. Coding answers are submitted, not executed: the
+code is frozen at submit time, evaluated against a rubric by an LLM, and marked by an
+admin who reviews that recommendation.
 
 Step-by-step setup: **[SETUP.md](SETUP.md)**.
 Architecture, capacity model, and failure analysis: **[DESIGN.md](DESIGN.md)**.
@@ -46,7 +48,7 @@ uvicorn app.main:app --reload
 
 # background workers (separate terminals)
 celery -A app.tasks.celery_app.celery_app worker -Q default -c 4 --loglevel=info
-celery -A app.tasks.celery_app.celery_app worker -Q judge   -c 4 --loglevel=info
+celery -A app.tasks.celery_app.celery_app worker -Q ai      -c 4 --loglevel=info
 celery -A app.tasks.celery_app.celery_app beat --loglevel=info
 
 # frontend
@@ -88,10 +90,14 @@ clock, a suspended laptop, or a throttled tab changes nothing. Two independent
 auto-submit paths exist: the client at zero, and a server-side sweeper every 30 s that
 finalizes any overdue attempt. No student can be left unsubmitted.
 
-**3. Code execution is queued, never synchronous.** Each run is a throwaway Docker
-container with no network, a read-only rootfs, 128 MB, 1 CPU, dropped capabilities, and
-a hard timeout. Judge workers have their own queue and bounded concurrency, so a burst
-of submissions queues instead of starving the API.
+**3. Coding assessment costs the exam path nothing.** Student code is never executed, so
+there is no sandbox to run and no per-run CPU to budget. Submitting freezes the code into
+a `coding_submissions` row and enqueues an evaluation on a separate `ai` queue, run by its
+own worker at concurrency 4. Each of those tasks blocks for seconds on a call to OpenAI,
+which is exactly why it must not share the `default` queue with the answer flush and the
+auto-submit sweeper. A burst of submissions, a slow model, or a total OpenAI outage backs
+up only that queue: the submission is already committed before the task is dispatched, so
+the worst case is a row waiting for an admin, never a lost answer.
 
 Everything mutable during an exam lives in Redis, which is what makes the API stateless,
 horizontally scalable, and resume-on-refresh trivial.
@@ -112,27 +118,32 @@ backend/
     security.py        JWT + bcrypt
     routers/
       auth.py          student & admin login, refresh, logout
-      student.py       start, state, questions, auto-save, run code, submit
-      admin.py         exam builder, uploads, publish gate, monitor, analytics, export
+      student.py       start, state, questions, auto-save, submit
+      admin.py         exam builder, uploads, publish gate, monitor, coding review, analytics, export
     services/
       paper.py         per-student randomization (frozen at start)
       answers.py       idempotent bulk upsert
       grading.py       MCQ/DI scoring with negative marking
-      sandbox.py       Docker sandbox
-      harness.py       function-mode driver generation (param encode/decode)
+      coding.py        submit-time code snapshot; folds finalized scores into the total
+      ai_evaluator.py  OpenAI call + hard validation of what comes back
+      rubric.py        loads/validates the YAML marking rubric
+      harness.py       function-mode starter code (signature only — nothing runs it)
       harness_langs/   per-language boilerplate for function-mode problems
       monitor.py       live-monitor snapshot, shared by the poll and WebSocket paths
       email.py         Brevo transactional email (magic links)
       export.py        XLSX results
     tasks/
       maintenance.py   answer flush + auto-submit sweeper
-      judge_tasks.py   sample runs and final grading
+      ai_tasks.py      coding evaluation on the `ai` queue (failure never fails a submit)
       mailer_tasks.py  bulk magic-link sends
+  assessments/
+    rubrics/           marking rubrics (YAML) — the contract every AI score is checked against
+  ai/
+    prompts/           evaluator prompt (Markdown), kept out of the code
     ws_manager.py      per-worker WebSocket registry for Live Monitor
     pubsub.py          Redis pub/sub fan-out across uvicorn workers
   scripts/
     seed.py            schema + demo exam + students
-    loadtest.py        simulates N concurrent students
 frontend/
   src/
     api.ts             typed client, transparent token refresh
@@ -143,6 +154,7 @@ frontend/
       useLiveMonitorSocket.ts WebSocket client for the admin live monitor
     components/
       CodeEditor.tsx   lazy-loaded editor, keeps Monaco out of the initial bundle
+      NoExecutionNotice.tsx  explains the absent Run button in the editor toolbar
     pages/             Login, MagicLinkCallback, Dashboard, Exam, Submitted, admin/*
 ```
 
@@ -158,7 +170,9 @@ editor chunk is only downloaded when a candidate opens a coding question.
 1. **Create exam** — title, duration, cohort. Blank cohort = visible to all students.
 2. **Add sections** — marks per question and negative marking are set per section.
 3. **Add questions** — MCQ (single or CSV bulk), DI sets (image/table + child questions,
-   created together), coding problems (statement, languages, sample + hidden test cases).
+   created together), coding problems (statement, languages, sample + hidden test cases —
+   never executed now, they are the expected-behaviour reference the AI evaluator marks
+   against, and the sample ones are still shown to the student as worked examples).
 4. **Edit or delete questions** — the "Existing questions" list under each section lets you
    change a question's wording, options, correct answer, explanation, marks, or (for coding)
    statement/languages/test cases, or delete it outright. DI sets can be edited (title/passage/
@@ -173,7 +187,12 @@ editor chunk is only downloaded when a candidate opens a coding question.
 7. **Monitor** — live counts and per-student rows, pushed over WebSocket the moment
    something changes, with a 5 s poll as a fallback if the socket drops. Force-submit
    and time-extension are available per attempt and both are audit-logged.
-8. **Export / analytics** — XLSX results, score distribution, per-question accuracy.
+8. **Coding Evaluation** — the review queue for submitted code, with the AI's per-criterion
+   scores, reasoning, and confidence, plus a filter for the ones it flagged for manual
+   review. An admin edits or overrides the score and finalizes; the AI's recommendation is
+   never overwritten, so the original stays auditable. Only a finalized score reaches the
+   exam total, and failed evaluations can be re-queued from here.
+9. **Export / analytics** — XLSX results, score distribution, per-question accuracy.
 
 ### CSV formats
 
@@ -196,13 +215,9 @@ What is 2 + 2?,3,4,5,6,B,2,0.5
 
 ## Load testing
 
-```bash
-cd backend
-python -m scripts.loadtest --students 400 --duration 300
-```
-
-Simulates the real traffic mix — logins, auto-save every 10 s, heartbeats every 30 s,
-navigation — and reports p50/p95/p99 latency per endpoint. Run at 1.5× expected
+No load-test harness ships with the repo — it was removed as pre-production
+scaffolding. Before an exam, drive the real traffic mix (logins, auto-save every
+10 s, heartbeats every 30 s, navigation) at 1.5× expected
 concurrency before an exam.
 
 The two numbers that predict an exam-day incident are **auto-save p99** and **flush
@@ -218,8 +233,11 @@ lag** (`dirty_attempts` set size). Watch those, not CPU.
 - [ ] Load test passed at 1.5× expected concurrency
 - [ ] Redis AOF persistence on (`appendfsync everysec`)
 - [ ] Auto-submit sweeper verified against a seeded overdue attempt
-- [ ] Judge images pre-pulled on the judge host for every language the exam uses
-      (first pull is slow)
+- [ ] `OPENAI_API_KEY` set and `AI_EVALUATION_ENABLED` decided deliberately. Neither is
+      exam-critical — without them submissions queue for manual grading — but finding out
+      after the exam means grading every coding answer by hand
+- [ ] Rubric reviewed (`assessments/rubrics/default_coding.yaml`); its `max_marks` is
+      scaled to each question's own marks, so check the criteria, not the totals
 - [ ] Postgres snapshot taken immediately before the window opens
 - [ ] Beat worker running. Without it, answers never flush and nothing auto-submits
 
@@ -233,7 +251,16 @@ lag** (`dirty_attempts` set size). Watch those, not CPU.
 - **Worst-case answer loss is one flush interval (~120 s by default, `AUTOSAVE_FLUSH_SECONDS`)**,
   and only if Redis dies
   outright. AOF persistence bounds this further.
-- **The judge trusts Docker as the isolation boundary.** For untrusted code at higher
-  stakes, run judge workers on a dedicated host with gVisor or Firecracker.
+- **Student code is never executed**, so correctness is judged by reading the code, not by
+  running it. An evaluation is a reasoned opinion against a rubric, not a test result: it
+  can be wrong in ways a test suite cannot. This is why an AI score is only ever a
+  recommendation, and only an admin-finalized score counts toward the exam total.
+- **Student code is untrusted input to an LLM.** Nothing runs it, so the sandbox-escape
+  class of risk is gone; what replaces it is prompt injection — a submission whose
+  comments or strings instruct the evaluator to award full marks. The evaluator prompt
+  states that the submission is data and that directives inside it are to be graded as
+  text, never followed, and every number the model returns is re-validated against the
+  rubric's caps before storage. Treat both as mitigations, not guarantees: the admin
+  review step is the actual control.
 - **Analytics run against the primary** in this scaffold. Point them at a read replica
   before running reports during a live exam.

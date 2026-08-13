@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -11,10 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache
-from app.config import settings
 from app.db import get_db
 from app.deps import (
-    active_attempt,
     attempt_exam,
     current_student,
     resolve_deadline,
@@ -24,40 +23,32 @@ from app.models import (
     Answer,
     AttemptStatus,
     AuditLog,
-    CodingProblem,
     Exam,
     ExamAttempt,
     ExamStatus,
-    JudgeMode,
-    JudgeRun,
-    JudgeStatus,
     Question,
-    QuestionType,
     Section,
     Student,
-    TestCase,
 )
 from app.schemas import (
     AnswerBatchSave,
     AnswerSave,
     AnswerState,
-    CodeRunAccepted,
-    CodeRunOut,
-    CodeRunRequest,
     ExamPaperOut,
     ExamStateOut,
     ExamSummaryOut,
     HeartbeatOut,
     SaveAck,
     SubmitReceipt,
-    TestCaseResult,
 )
 from app.security import create_access_token
 from app.services import answers as answer_service
-from app.services import grading, paper
+from app.services import coding, grading, paper
 from app.seb import verify_seb_request
 
 router = APIRouter(prefix="/api/exam", tags=["student"])
+
+log = logging.getLogger(__name__)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -294,104 +285,9 @@ async def heartbeat(
     )
 
 
-@router.post("/code/run", response_model=CodeRunAccepted, status_code=status.HTTP_202_ACCEPTED)
-async def run_code(
-    payload: CodeRunRequest,
-    attempt: Annotated[ExamAttempt, Depends(writable_attempt)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> CodeRunAccepted:
-    """Queues a sample-test-case run. Never synchronous — a blocking compile would
-    consume a web worker for seconds."""
-    if len(payload.code_text.encode()) > settings.judge_max_code_bytes:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Submission too large")
-
-    problem_result = await db.execute(
-        select(CodingProblem)
-        .join(Question, CodingProblem.question_id == Question.id)
-        .join(Section, Question.section_id == Section.id)
-        .where(Question.id == payload.question_id, Section.exam_id == attempt.exam_id)
-    )
-    problem = problem_result.scalar_one_or_none()
-    if problem is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding question not found in this exam")
-    if payload.language not in problem.allowed_languages:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Language not allowed. Choose from: {', '.join(problem.allowed_languages)}",
-        )
-
-    # A run targets exactly one thing: a specific sample case, or ad-hoc custom
-    # input/params. Neither given falls back to the legacy "run every sample"
-    # behavior. Whether "custom" means custom_stdin or custom_params is decided by
-    # the judge worker from problem.problem_type — this endpoint doesn't need to
-    # know which judge mode a problem uses.
-    mode = JudgeMode.sample
-    test_case_id: uuid.UUID | None = None
-    if payload.custom_stdin is not None or payload.custom_params is not None:
-        mode = JudgeMode.custom
-    elif payload.test_case_id is not None:
-        case = await db.get(TestCase, payload.test_case_id)
-        if case is None or case.coding_problem_id != problem.id or not case.is_sample:
-            # A hidden case's id must never be runnable through this endpoint.
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Test case not found")
-        test_case_id = case.id
-
-    run = JudgeRun(
-        attempt_id=attempt.id,
-        question_id=payload.question_id,
-        language=payload.language,
-        code_text=payload.code_text,
-        mode=mode,
-        test_case_id=test_case_id,
-        custom_stdin=payload.custom_stdin,
-        custom_params=payload.custom_params,
-        status=JudgeStatus.queued,
-    )
-    db.add(run)
-    await db.flush()
-
-    # Persist the code alongside the run so a crash mid-run never loses the student's work.
-    await cache.buffer_answers(
-        str(attempt.id),
-        {
-            str(payload.question_id): {
-                "selected_option_id": None,
-                "code_text": payload.code_text,
-                "language": payload.language,
-                "is_marked_for_review": False,
-            }
-        },
-    )
-
-    # Commit before enqueueing: the judge worker reads this row over its own
-    # connection, and get_db()'s commit doesn't happen until after this function
-    # returns. Without this, the worker can (and, under low latency, reliably does)
-    # run its query before the row is visible outside this transaction.
-    await db.commit()
-
-    from app.tasks.judge_tasks import judge_run  # local import avoids a circular import
-
-    judge_run.delay(str(run.id))
-    return CodeRunAccepted(run_id=run.id, status=run.status)
-
-
-@router.get("/code/run/{run_id}", response_model=CodeRunOut)
-async def get_code_run(
-    run_id: uuid.UUID,
-    attempt: Annotated[ExamAttempt, Depends(active_attempt)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> CodeRunOut:
-    run = await db.get(JudgeRun, run_id)
-    if run is None or run.attempt_id != attempt.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
-    return CodeRunOut(
-        run_id=run.id,
-        status=run.status,
-        passed=run.passed,
-        total=run.total,
-        results=[TestCaseResult(**r) for r in (run.results or [])],
-        error=run.error,
-    )
+# NOTE: there is deliberately no code-execution endpoint on this branch. Coding
+# questions are submission-only: student code is persisted and evaluated by
+# app.tasks.ai_tasks + a human admin, and is never compiled or run anywhere.
 
 
 @router.post("/submit", response_model=SubmitReceipt)
@@ -419,6 +315,10 @@ async def submit_exam(
     attempt.grading_complete = not coding_pending
     await db.flush()
 
+    # Freeze the code before anything else can touch it. Returns only the rows
+    # this call actually created, so a retried submit queues nothing twice.
+    new_submissions = await coding.snapshot_submissions(db, attempt)
+
     db.add(
         AuditLog(
             actor_type="student",
@@ -430,16 +330,28 @@ async def submit_exam(
     await cache.clear_attempt(str(attempt.id))
     await cache.publish_live_update(str(attempt.exam_id))
 
-    if coding_pending:
-        # Same reasoning as run_code: commit first so the judge worker's own
-        # connection can actually see the answers it's about to grade.
+    receipt = await _receipt(db, attempt)
+
+    if new_submissions:
+        # Commit before enqueueing: the evaluation worker reads these rows over
+        # its own connection, and get_db()'s commit doesn't happen until after
+        # this function returns. Without this the worker can (and under low
+        # latency reliably does) query before the rows are visible.
         await db.commit()
 
-        from app.tasks.judge_tasks import grade_attempt_coding
+        # Local import avoids a circular import at module load.
+        from app.tasks.ai_tasks import evaluate_coding_submission
 
-        grade_attempt_coding.delay(str(attempt.id))
+        for submission_id in new_submissions:
+            try:
+                evaluate_coding_submission.delay(str(submission_id))
+            except Exception:
+                # A broker outage must never fail the student's submission. The
+                # row is committed and sits at PENDING; an admin can re-run the
+                # evaluation, or grade it by hand, from the review screen.
+                log.exception("Could not queue AI evaluation for submission %s", submission_id)
 
-    return await _receipt(db, attempt)
+    return receipt
 
 
 async def _receipt(db: AsyncSession, attempt: ExamAttempt) -> SubmitReceipt:

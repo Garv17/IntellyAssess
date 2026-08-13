@@ -13,6 +13,7 @@ import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
 import AttemptDetail from './pages/admin/AttemptDetail';
+import CodingEvaluation from './pages/admin/CodingEvaluation';
 import ExamBuilder from './pages/admin/ExamBuilder';
 import LiveMonitor from './pages/admin/LiveMonitor';
 import StudentDetails from './pages/admin/StudentDetails';
@@ -90,6 +91,22 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Guard role="admin">
               <Analytics />
+            </Guard>
+          }
+        />
+        <Route
+          path="/admin/coding-evaluation"
+          element={
+            <Guard role="admin">
+              <CodingEvaluation />
+            </Guard>
+          }
+        />
+        <Route
+          path="/admin/coding-evaluation/:submissionId"
+          element={
+            <Guard role="admin">
+              <CodingEvaluation />
             </Guard>
           }
         />

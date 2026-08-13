@@ -47,13 +47,29 @@ class Settings(BaseSettings):
     # Grace period for in-flight requests that started just before the deadline.
     deadline_grace_seconds: int = 5
 
-    # Judge sandbox
-    judge_image_prefix: str = "exam-judge"
-    judge_timeout_seconds: int = 5
-    judge_memory_mb: int = 256
-    judge_cpus: float = 1.0
-    judge_pids_limit: int = 64
-    judge_max_code_bytes: int = 64 * 1024
+    # Coding submissions. This build is submission-only: student code is never
+    # executed anywhere, it is persisted and graded by an AI evaluator + a human.
+    submission_max_code_bytes: int = 64 * 1024
+
+    # AI evaluation (OpenAI-compatible chat completions with structured output).
+    # The key is read from the environment only — never checked in, never sent
+    # to the frontend.
+    ai_evaluation_enabled: bool = True
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_seconds: float = 60.0
+    # Counts against OpenAI's per-minute token limit whether or not it is used, so
+    # this trades queue drain rate against the risk of truncating a long
+    # evaluation. Measured responses are ~450 tokens.
+    openai_max_output_tokens: int = 1500
+    # Path to the rubric the evaluator scores against. Relative paths resolve
+    # from the backend/ directory (the Docker image's WORKDIR).
+    coding_rubric_path: str = "assessments/rubrics/default_coding.yaml"
+    coding_evaluator_prompt_path: str = "ai/prompts/coding_evaluator.md"
+    # Below this, the submission is flagged "Manual Review Recommended". A review
+    # signal only — the model's confidence is not a calibrated probability.
+    ai_low_confidence_threshold: float = 0.6
 
     # Uploads
     upload_dir: str = "./uploads"
@@ -86,6 +102,21 @@ def get_settings() -> Settings:
             # Students can only sign in via magic link, so a missing mailer key means
             # nobody can log in at all — fail at boot, not on the first login attempt.
             raise RuntimeError("BREVO_API_KEY is not set; student magic-link login cannot send mail")
+        if config.debug:
+            # FastAPI's debug mode returns tracebacks to the caller, which on this
+            # app means leaking query text and connection details to a student.
+            raise RuntimeError("DEBUG must be false outside development")
+        if "*" in config.cors_origins:
+            # A wildcard origin with allow_credentials=True lets any site drive the
+            # API using a logged-in examiner's cookies.
+            raise RuntimeError("CORS_ORIGINS cannot be '*' when credentials are allowed")
+        if config.ai_evaluation_enabled and not config.openai_api_key:
+            # Otherwise every coding submission in the sitting lands on AI_FAILED and
+            # the whole cohort needs hand-marking — discovered one exam too late.
+            raise RuntimeError(
+                "AI_EVALUATION_ENABLED is true but OPENAI_API_KEY is empty. Set the key, "
+                "or set AI_EVALUATION_ENABLED=false to mark coding answers by hand."
+            )
     return config
 
 

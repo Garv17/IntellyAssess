@@ -4,6 +4,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import logging
 import secrets
 import statistics
 import uuid
@@ -43,14 +44,13 @@ from app.models import (
     AttemptStatus,
     AuditLog,
     CodingProblem,
+    CodingSubmission,
     DIGroup,
+    EvaluationStatus,
     Exam,
     ExamAttempt,
     ExamInvite,
     ExamStatus,
-    JudgeMode,
-    JudgeRun,
-    JudgeStatus,
     MCQOption,
     ProblemType,
     Question,
@@ -71,10 +71,13 @@ from app.schemas import (
     BulkMagicLinkQueued,
     BulkMagicLinkRequest,
     BulkResult,
-    CodingCaseReview,
     CodingCreate,
+    CodingGradeRequest,
     CodingProblemAdminOut,
     CodingReview,
+    CodingSubmissionListItem,
+    CodingSubmissionOut,
+    CodingSubmissionPage,
     CodingUpdate,
     DIGroupAdminOut,
     DIGroupCreate,
@@ -102,20 +105,22 @@ from app.schemas import (
     SectionAdminOut,
     SectionCreate,
     SectionReorderRequest,
+    RubricCriterionOut,
     SectionScore,
-    SqlPreviewOut,
-    SqlPreviewRequest,
     StudentCreate,
     StudentOut,
     StudentUpdate,
     TestCaseAdminOut,
 )
 from app.security import create_magic_token
+from app.services import coding as coding_service
 from app.services import export, harness, paper
 from app.services.email import send_magic_link_email
-from app.tasks.judge_tasks import preview_sql as preview_sql_task
+from app.services.rubric import get_rubric
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+log = logging.getLogger(__name__)
 
 AdminDep = Annotated[Admin, Depends(current_admin)]
 DbDep = Annotated[AsyncSession, Depends(get_db)]
@@ -904,21 +909,9 @@ async def preview_boilerplate(payload: BoilerplatePreviewRequest, admin: AdminDe
     return BoilerplatePreviewOut(code=code)
 
 
-@router.post("/sql/preview", response_model=SqlPreviewOut)
-async def preview_sql(payload: SqlPreviewRequest, admin: AdminDep) -> SqlPreviewOut:
-    """No DB writes — actually runs the reference query against the setup SQL for one
-    test case, so an admin never has to hand-compute a GROUP BY/JOIN result to fill in
-    expected_stdout. Dispatched onto the judge queue (judge.preview_sql) rather than
-    run in this process — only the judge worker container has Docker socket access
-    (see docker-compose.yml); the api container intentionally does not."""
-    try:
-        result = await asyncio.to_thread(
-            preview_sql_task.apply_async(args=[payload.setup_sql, payload.query_sql]).get,
-            timeout=15,
-        )
-    except Exception as exc:
-        return SqlPreviewOut(stdout="", error=f"Judge is temporarily unavailable: {exc}")
-    return SqlPreviewOut(stdout=result["stdout"], error=result["error"])
+# NOTE: the SQL "run reference query" preview lived here. It executed SQL in the
+# judge sandbox, which this branch does not have — an admin now types the expected
+# result directly, same as for any other language.
 
 
 @router.post("/sections/{section_id}/coding", status_code=status.HTTP_201_CREATED)
@@ -928,15 +921,13 @@ async def create_coding_problem(
     section = await _get_section(db, section_id)
     await _assert_editable(db, section.exam_id)
 
+    # Sample cases are the worked examples a student sees. Hidden cases are now
+    # optional: nothing executes them, they only give the AI evaluator extra
+    # context about the intended behaviour.
     if not any(tc.is_sample for tc in payload.test_cases):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Provide at least one sample test case so students can run their code",
-        )
-    if not any(not tc.is_sample for tc in payload.test_cases):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Provide at least one hidden test case; sample-only grading is trivially gamed",
+            "Provide at least one sample test case to show students as a worked example",
         )
     coding_fields = _prepare_coding_fields(payload)
 
@@ -1036,15 +1027,13 @@ async def update_coding(
     if problem is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding problem not found")
 
+    # Sample cases are the worked examples a student sees. Hidden cases are now
+    # optional: nothing executes them, they only give the AI evaluator extra
+    # context about the intended behaviour.
     if not any(tc.is_sample for tc in payload.test_cases):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Provide at least one sample test case so students can run their code",
-        )
-    if not any(not tc.is_sample for tc in payload.test_cases):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Provide at least one hidden test case; sample-only grading is trivially gamed",
+            "Provide at least one sample test case to show students as a worked example",
         )
     coding_fields = _prepare_coding_fields(payload)
 
@@ -1431,11 +1420,8 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
                     problems.append(f"{label}: coding question has no problem definition")
                     continue
                 samples = [tc for tc in problem.test_cases if tc.is_sample]
-                hidden = [tc for tc in problem.test_cases if not tc.is_sample]
                 if not samples:
                     problems.append(f"{label}: needs at least one sample test case")
-                if not hidden:
-                    problems.append(f"{label}: needs at least one hidden test case")
                 if not problem.allowed_languages:
                     problems.append(f"{label}: no languages allowed")
                 if "sql" in problem.allowed_languages and not problem.sql_schema_sql:
@@ -1578,6 +1564,13 @@ async def force_submit(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> dic
     score, max_score, pending = await grading.grade_objective(db, attempt)
     attempt.total_score, attempt.max_score = score, max_score
     attempt.grading_complete = not pending
+    await db.flush()
+
+    # Same snapshot + queue as the student's own submit and the sweeper. Without
+    # it a force-submitted attempt has no CodingSubmission at all: nothing to
+    # grade, and grading_complete pinned false forever.
+    new_submissions = await coding_service.snapshot_submissions(db, attempt)
+
     await cache.clear_attempt(str(attempt.id))
     db.add(
         AuditLog(
@@ -1587,6 +1580,21 @@ async def force_submit(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> dic
             target=str(attempt_id),
         )
     )
+
+    if new_submissions:
+        # Commit before enqueueing so the worker's own connection sees the rows.
+        await db.commit()
+
+        from app.tasks.ai_tasks import evaluate_coding_submission
+
+        for submission_id in new_submissions:
+            try:
+                evaluate_coding_submission.delay(str(submission_id))
+            except Exception:
+                # A broker outage must not fail the invigilator's force-submit;
+                # the rows are saved at PENDING and re-runnable from the review UI.
+                log.exception("could not queue AI evaluation for submission %s", submission_id)
+
     return {"status": attempt.status.value, "detail": "Attempt submitted"}
 
 
@@ -1961,14 +1969,10 @@ async def attempt_questions(
     answers_result = await db.execute(select(Answer).where(Answer.attempt_id == attempt.id))
     answers = {a.question_id: a for a in answers_result.scalars()}
 
-    judge_result = await db.execute(
-        select(JudgeRun)
-        .where(JudgeRun.attempt_id == attempt.id, JudgeRun.mode == JudgeMode.final)
-        .order_by(JudgeRun.created_at.desc())
+    submissions_result = await db.execute(
+        select(CodingSubmission).where(CodingSubmission.attempt_id == attempt.id)
     )
-    judge_runs: dict[uuid.UUID, JudgeRun] = {}
-    for run in judge_result.scalars():
-        judge_runs.setdefault(run.question_id, run)  # first (latest) wins per question
+    submissions = {s.question_id: s for s in submissions_result.scalars()}
 
     reviews: list[QuestionReview] = []
     for section in sorted(exam.sections, key=lambda s: s.order_index):
@@ -1993,22 +1997,30 @@ async def attempt_questions(
             coding_review: CodingReview | None = None
             student_answer: str | None = None
             correct_answer: str | None = None
-            q_status: Literal["correct", "incorrect", "skipped"]
+            q_status: Literal["correct", "incorrect", "skipped", "pending"]
 
             if question.type is QuestionType.coding:
-                if answer is None or not answer.code_text:
+                submission = submissions.get(question.id)
+                if answer is None or not (answer.code_text or "").strip():
                     q_status = "skipped"
                 else:
-                    q_status = "correct" if answer.is_correct else "incorrect"
-                    run = judge_runs.get(question.id)
+                    # A coding answer has no correct/incorrect until an admin
+                    # finalizes it. Reporting "incorrect" in the meantime — which
+                    # is what the old judge-backed logic did, since is_correct is
+                    # NULL until then — makes every ungraded submission look wrong.
+                    if submission is None or submission.status is not EvaluationStatus.finalized:
+                        q_status = "pending"
+                    else:
+                        q_status = "correct" if answer.is_correct else "incorrect"
                     coding_review = CodingReview(
+                        submission_id=submission.id if submission else None,
                         language=answer.language or "python",
                         code_text=answer.code_text,
-                        status=run.status if run else JudgeStatus.queued,
-                        passed=run.passed if run else 0,
-                        total=run.total if run else 0,
-                        score=run.score if run else 0.0,
-                        cases=[CodingCaseReview(**c) for c in (run.results if run else [])],
+                        status=submission.status if submission else None,
+                        ai_score=submission.ai_score if submission else None,
+                        final_score=submission.final_score if submission else None,
+                        max_marks=submission.max_marks if submission else marks,
+                        manual_review_recommended=_needs_review(submission),
                     )
             else:
                 options = {o.id: o.body for o in question.options}
@@ -2066,16 +2078,18 @@ async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
             )
         )
 
-    runs_result = await db.execute(
-        select(JudgeRun).where(JudgeRun.attempt_id == attempt_id).order_by(JudgeRun.created_at)
+    submissions_result = await db.execute(
+        select(CodingSubmission)
+        .where(CodingSubmission.attempt_id == attempt_id)
+        .order_by(CodingSubmission.submitted_at)
     )
-    for run in runs_result.scalars():
+    for submission in submissions_result.scalars():
         events.append(
             ActivityEvent(
-                type="code_run",
-                timestamp=run.created_at,
-                label=f"Ran code ({run.language})",
-                detail=f"{run.passed}/{run.total} passed" if run.total else run.status.value,
+                type="code_submitted",
+                timestamp=submission.submitted_at,
+                label=f"Submitted code ({submission.language})",
+                detail=f"Evaluation: {submission.status.value}",
             )
         )
 
@@ -2100,3 +2114,223 @@ async def attempt_activity(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) ->
 
     events.sort(key=lambda e: e.timestamp)
     return ActivityTimeline(events=events)
+
+
+# --------------------------------------------------------- coding evaluation
+# The AI recommendation is advisory. Nothing here lets an admin's edit overwrite
+# an ai_* column, and only an explicit finalize turns a score into a mark.
+
+
+def _needs_review(submission: CodingSubmission | None) -> bool:
+    """Whether the review screen should show "Manual Review Recommended". An AI
+    failure always needs a human; otherwise it's the model's own flag, which the
+    evaluator already raises for low confidence."""
+    if submission is None:
+        return False
+    if submission.status is EvaluationStatus.ai_failed:
+        return True
+    return submission.ai_requires_manual_review
+
+
+async def _get_submission(db: AsyncSession, submission_id: uuid.UUID) -> CodingSubmission:
+    submission = await db.get(CodingSubmission, submission_id)
+    if submission is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding submission not found")
+    return submission
+
+
+@router.get("/coding-submissions", response_model=CodingSubmissionPage)
+async def list_coding_submissions(
+    admin: AdminDep,
+    db: DbDep,
+    exam_id: uuid.UUID | None = None,
+    status_filter: Annotated[EvaluationStatus | None, Query(alias="status")] = None,
+    needs_review: bool = False,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> CodingSubmissionPage:
+    """The coding evaluation queue. Newest-first, so whatever an examiner most
+    likely still owes a mark on is at the top."""
+    query = (
+        select(CodingSubmission, Student, Exam)
+        .join(Student, CodingSubmission.student_id == Student.id)
+        .join(ExamAttempt, CodingSubmission.attempt_id == ExamAttempt.id)
+        .join(Exam, ExamAttempt.exam_id == Exam.id)
+    )
+    if exam_id is not None:
+        query = query.where(ExamAttempt.exam_id == exam_id)
+    if status_filter is not None:
+        query = query.where(CodingSubmission.status == status_filter)
+    if needs_review:
+        query = query.where(
+            or_(
+                CodingSubmission.ai_requires_manual_review.is_(True),
+                CodingSubmission.status == EvaluationStatus.ai_failed,
+            )
+        )
+    if search:
+        like = f"%{search}%"
+        query = query.where(or_(Student.name.ilike(like), Student.student_id.ilike(like)))
+
+    total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    rows = await db.execute(
+        query.order_by(CodingSubmission.submitted_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rubric_max = get_rubric().max_marks
+
+    return CodingSubmissionPage(
+        items=[
+            CodingSubmissionListItem(
+                id=submission.id,
+                attempt_id=submission.attempt_id,
+                question_id=submission.question_id,
+                student_name=student.name,
+                student_number=student.student_id,
+                exam_id=exam.id,
+                exam_title=exam.title,
+                language=submission.language,
+                submitted_at=submission.submitted_at,
+                status=submission.status,
+                max_marks=submission.max_marks,
+                ai_score=submission.ai_score,
+                rubric_max_marks=rubric_max,
+                final_score=submission.final_score,
+                manual_review_recommended=_needs_review(submission),
+            )
+            for submission, student, exam in rows.all()
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+async def _submission_detail(db: AsyncSession, submission: CodingSubmission) -> CodingSubmissionOut:
+    student = await db.get(Student, submission.student_id)
+    question = await db.get(Question, submission.question_id)
+    problem = await db.scalar(
+        select(CodingProblem).where(CodingProblem.question_id == submission.question_id)
+    )
+    attempt = await db.get(ExamAttempt, submission.attempt_id)
+    exam = await db.get(Exam, attempt.exam_id) if attempt else None
+
+    rubric = get_rubric()
+    awarded = submission.ai_rubric_scores or {}
+    justifications = submission.ai_rubric_justifications or {}
+
+    out = CodingSubmissionOut.model_validate(submission)
+    out.student_name = student.name if student else ""
+    out.student_number = student.student_id if student else ""
+    out.exam_title = exam.title if exam else ""
+    out.question_body_md = question.body_md if question else ""
+    out.statement_md = problem.statement_md if problem else ""
+    out.constraints_md = problem.constraints_md if problem else None
+    out.rubric_max_marks = rubric.max_marks
+    out.rubric = [
+        RubricCriterionOut(
+            key=c.key,
+            description=c.description,
+            max_marks=c.marks,
+            awarded=awarded.get(c.key),
+            justification=justifications.get(c.key),
+        )
+        for c in rubric.criteria
+    ]
+    out.manual_review_recommended = _needs_review(submission)
+    return out
+
+
+@router.get("/coding-submissions/{submission_id}", response_model=CodingSubmissionOut)
+async def get_coding_submission(
+    submission_id: uuid.UUID, admin: AdminDep, db: DbDep
+) -> CodingSubmissionOut:
+    return await _submission_detail(db, await _get_submission(db, submission_id))
+
+
+@router.patch("/coding-submissions/{submission_id}", response_model=CodingSubmissionOut)
+async def grade_coding_submission(
+    submission_id: uuid.UUID, payload: CodingGradeRequest, admin: AdminDep, db: DbDep
+) -> CodingSubmissionOut:
+    """Save or finalize an admin's mark. The AI's recommendation is untouched by
+    this — ai_score and the rubric breakdown stay exactly as the evaluator wrote
+    them, so the original recommendation stays auditable after any override."""
+    submission = await _get_submission(db, submission_id)
+
+    if payload.final_score > submission.max_marks + 1e-6:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Final score cannot exceed this question's {submission.max_marks:g} marks",
+        )
+
+    submission.final_score = float(payload.final_score)
+    submission.admin_comment = payload.admin_comment
+    submission.admin_id = admin.id
+
+    if payload.finalize:
+        submission.status = EvaluationStatus.finalized
+        submission.finalized_at = datetime.now(UTC)
+    else:
+        # A saved-but-not-finalized score must not count toward the exam total.
+        submission.status = EvaluationStatus.admin_reviewed
+        submission.finalized_at = None
+    await db.flush()
+
+    if payload.finalize:
+        await coding_service.apply_final_score(db, submission)
+    else:
+        # Un-finalizing has to pull the mark back out of the attempt total.
+        await coding_service.recompute_attempt_total(db, submission.attempt_id)
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="coding_score_finalized" if payload.finalize else "coding_score_saved",
+            target=str(submission_id),
+            meta={"final_score": submission.final_score, "ai_score": submission.ai_score},
+        )
+    )
+    return await _submission_detail(db, submission)
+
+
+@router.post("/coding-submissions/{submission_id}/re-evaluate", response_model=CodingSubmissionOut)
+async def reevaluate_coding_submission(
+    submission_id: uuid.UUID, admin: AdminDep, db: DbDep
+) -> CodingSubmissionOut:
+    """Re-queue a failed, never-queued, or stuck evaluation — e.g. after an OpenAI
+    outage. Refused once a human has reviewed the submission, so a retry can never
+    clobber an examiner's decision.
+
+    ai_evaluating is deliberately re-queueable: a worker killed mid-call leaves the
+    row there permanently (no redelivery can reclaim it, since the claim already
+    succeeded), and this is its only recovery. If the original call is somehow still
+    alive, the loser's write is rejected by the same status check that guards the
+    claim, so the worst case is a wasted API call rather than a corrupted row."""
+    submission = await _get_submission(db, submission_id)
+    if submission.status in (EvaluationStatus.admin_reviewed, EvaluationStatus.finalized):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Cannot re-evaluate a submission that is {submission.status.value}",
+        )
+
+    submission.status = EvaluationStatus.pending
+    submission.ai_error = None
+    # Commit before enqueueing so the worker's own connection sees the reset.
+    await db.commit()
+
+    from app.tasks.ai_tasks import evaluate_coding_submission
+
+    try:
+        evaluate_coding_submission.delay(str(submission.id))
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Could not queue the evaluation"
+        ) from exc
+
+    return await _submission_detail(db, submission)

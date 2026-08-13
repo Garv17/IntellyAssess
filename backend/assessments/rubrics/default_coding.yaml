@@ -1,0 +1,46 @@
+# Default marking rubric for coding questions.
+#
+# This file — not the evaluator prompt — is the source of truth for how a coding
+# submission is marked. The prompt renders whatever is here, and every score the
+# model returns is validated against these caps before it is stored, so editing
+# this file changes the marking scheme without touching any code.
+#
+# `max_marks` MUST equal the sum of the per-criterion marks; the loader refuses
+# to start with a rubric where it doesn't.
+#
+# Scores are scaled to each question's own marks at review time, so a question
+# worth 20 marks still uses this 10-point rubric and is scaled up.
+
+version: 1
+max_marks: 10
+
+criteria:
+  correctness:
+    marks: 5
+    description: >-
+      Correctness of the solution and logic. Does the algorithm actually solve
+      the stated problem for valid inputs, by reasoning about the code — not by
+      running it?
+
+  approach:
+    marks: 2
+    description: >-
+      Quality and validity of the algorithmic approach. A different but sound
+      approach than the reference is worth full marks.
+
+  edge_cases:
+    marks: 1
+    description: >-
+      Handling of important boundary/edge cases named or implied by the problem
+      statement and constraints (empty input, single element, overflow, ties).
+
+  efficiency:
+    marks: 1
+    description: >-
+      Time and space complexity relative to what the stated constraints require.
+
+  code_quality:
+    marks: 1
+    description: >-
+      Readability and maintainability: naming, structure, and absence of dead or
+      duplicated logic. Style preferences alone are not worth marks.

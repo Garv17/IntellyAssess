@@ -1,6 +1,6 @@
 """Tests for the pieces that don't need a live database: randomization stability,
-password hashing, judge output comparison, token claims, and the SQL that the
-auto-save flush depends on."""
+password hashing, rubric loading, AI-evaluation response validation, token claims,
+and the SQL that the auto-save flush depends on."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from app.security import (
     hash_password,
     verify_password,
 )
-from app.services import paper, sandbox
+from app.services import paper
 
 
 # --------------------------------------------------------------------- passwords
@@ -160,36 +160,6 @@ def test_option_order_only_recorded_when_enabled():
     )["sections"][0]["option_order"]
     assert len(shuffled) == 9
     assert all(len(v) == 4 for v in shuffled.values())
-
-
-# ------------------------------------------------------------- judge comparison
-
-
-@pytest.mark.parametrize(
-    ("actual", "expected"),
-    [
-        ("7\n", "7"),
-        ("7", "7\n\n"),
-        ("  7  \n", "  7"),
-        ("1\n2\n3\n", "1\n2\n3"),
-    ],
-)
-def test_normalize_ignores_trailing_whitespace(actual, expected):
-    # A stray newline must not cost a student marks.
-    assert sandbox.normalize(actual) == sandbox.normalize(expected)
-
-
-@pytest.mark.parametrize(
-    ("actual", "expected"),
-    [("7", "8"), ("1 2", "1  2"), ("12", "1\n2")],
-)
-def test_normalize_preserves_meaningful_differences(actual, expected):
-    assert sandbox.normalize(actual) != sandbox.normalize(expected)
-
-
-def test_every_declared_language_has_a_runnable_spec():
-    for name, spec in sandbox.LANGUAGES.items():
-        assert spec.image and spec.filename and spec.run_cmd, name
 
 
 # --------------------------------------------------------------- auto-save SQL

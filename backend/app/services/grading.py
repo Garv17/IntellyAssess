@@ -1,5 +1,6 @@
-"""Scoring. MCQ/DI grade inline at submit; coding is graded asynchronously
-against the full hidden test-case set."""
+"""Scoring. MCQ/DI grade inline at submit. Coding never grades itself: a coding
+answer's score stays 0 until an admin finalizes its submission, which is the only
+thing that writes a mark (see app.services.coding.apply_final_score)."""
 
 from __future__ import annotations
 
@@ -11,7 +12,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models import (
     Answer,
-    CodingProblem,
     ExamAttempt,
     MCQOption,
     Question,
@@ -48,10 +48,16 @@ async def grade_objective(db: AsyncSession, attempt: ExamAttempt) -> tuple[float
         answer = answers.get(question.id)
 
         if question.type is QuestionType.coding:
-            # Scored by the judge task; whatever it already wrote counts.
+            # Only an admin-finalized score is ever written to answer.score, so
+            # whatever is there already counts. is_correct stays NULL until then,
+            # which is what marks the attempt as still awaiting a coding mark.
             if answer is not None:
                 total += answer.score
-                if answer.is_correct is None and answer.code_text:
+                # .strip(): must match what coding.snapshot_submissions actually
+                # snapshots. A whitespace-only answer creates no submission, so
+                # counting it as pending would pin the attempt at "grading
+                # pending" with nothing in the queue to finalize.
+                if answer.is_correct is None and (answer.code_text or "").strip():
                     coding_pending = True
             continue
 
@@ -65,42 +71,6 @@ async def grade_objective(db: AsyncSession, attempt: ExamAttempt) -> tuple[float
         total += answer.score
 
     return total, max_score, coding_pending
-
-
-async def finalize_score(db: AsyncSession, attempt: ExamAttempt) -> None:
-    """Recompute the attempt total from persisted answer scores."""
-    result = await db.execute(select(Answer.score).where(Answer.attempt_id == attempt.id))
-    attempt.total_score = float(sum(result.scalars()))
-
-    pending = await db.execute(
-        select(Answer.id)
-        .join(Question, Answer.question_id == Question.id)
-        .where(
-            Answer.attempt_id == attempt.id,
-            Question.type == QuestionType.coding,
-            Answer.is_correct.is_(None),
-            Answer.code_text.isnot(None),
-        )
-    )
-    attempt.grading_complete = pending.first() is None
-
-
-async def coding_submissions(
-    db: AsyncSession, attempt_id: uuid.UUID
-) -> list[tuple[Answer, CodingProblem]]:
-    """Coding answers with actual code, paired with their problem definition."""
-    result = await db.execute(
-        select(Answer, CodingProblem)
-        .join(Question, Answer.question_id == Question.id)
-        .join(CodingProblem, CodingProblem.question_id == Question.id)
-        .where(
-            Answer.attempt_id == attempt_id,
-            Question.type == QuestionType.coding,
-            Answer.code_text.isnot(None),
-        )
-        .options(selectinload(CodingProblem.test_cases))
-    )
-    return [(answer, problem) for answer, problem in result.all()]
 
 
 async def correct_option_map(db: AsyncSession, exam_id: uuid.UUID) -> dict[uuid.UUID, set[uuid.UUID]]:

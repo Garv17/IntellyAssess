@@ -6,7 +6,7 @@
  * as "the exam is broken". Bundling serves it from the same origin as everything else.
  *
  * Only the generic editor worker is included. Monaco's TS/CSS/HTML language services
- * are ~8 MB of assets that do nothing for the languages the judge actually runs.
+ * are ~8 MB of assets that do nothing for the languages students actually write in.
  */
 import { loader } from '@monaco-editor/react';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';

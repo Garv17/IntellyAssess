@@ -1352,3 +1352,44 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
+
+/* ------------------------------------------------- submission-only coding */
+
+/* Sits where the Run button used to, explaining its absence rather than
+   leaving the toolbar looking half-built. */
+.no-exec-notice {
+  display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0 auto;
+  font-size: 0.8rem; color: var(--muted-strong); text-align: right;
+}
+.no-exec-notice svg { flex-shrink: 0; }
+.no-exec-notice-warning { color: #dc2626; font-weight: 600; }
+
+/* Worked examples are read-only now — no hover/active affordance, and the
+   input/output wrap instead of truncating, since there's nothing to click
+   through to for the full text. */
+.target-case.static { cursor: default; flex-direction: column; align-items: stretch; gap: 0.25rem; }
+.target-case.static:hover { border-color: var(--border); }
+.target-case.static pre { white-space: pre-wrap; overflow: visible; text-overflow: clip; }
+
+.sql-example-block { margin-bottom: 0.75rem; }
+
+/* --------------------------------------------------- coding evaluation */
+
+.banner.review-flag {
+  background: var(--warn-soft); border-color: var(--amber-100); color: var(--amber-700);
+}
+.checkbox-inline { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+.active-row { background: var(--surface-sunken); }
+.ai-recommended {
+  display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;
+  font-size: 1rem; margin: 0.5rem 0 0.9rem;
+}
+.ai-recommended strong { font-size: 1.15rem; }
+.final-score-row { display: flex; align-items: flex-end; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
+.final-score-row input { width: 7rem; }
+
+/* Per-criterion "why this score" in the coding rubric table. The rubric wording
+   sits under the reason, dimmer, so an examiner can check the mark against the
+   criterion without mistaking the criterion for the reason. */
+.rubric-why { display: block; max-width: 46ch; }
+.rubric-criterion-desc { display: block; margin-top: 0.3rem; opacity: 0.75; max-width: 46ch; }

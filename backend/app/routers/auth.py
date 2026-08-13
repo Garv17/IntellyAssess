@@ -118,8 +118,8 @@ async def request_magic_link(
             return MAGIC_LINK_ACK
 
     await _log(db, "student", student.id, "magic_link_requested")
-    # Dev-only: hands the raw token back so scripts/loadtest.py can redeem it without
-    # a real mailbox. Never populated outside ENVIRONMENT=development.
+    # Dev-only: hands the raw token back so a local sign-in works without a real
+    # mailbox (see SETUP.md). Never populated outside ENVIRONMENT=development.
     dev_token = token if settings.environment == "development" else None
     return MagicLinkSent(dev_token=dev_token)
 

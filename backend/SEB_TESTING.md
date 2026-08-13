@@ -13,7 +13,7 @@
 **No admin UI yet** for toggling `requires_seb`/`seb_config_key` (direct SQL) or for
 triggering invites (`POST /api/admin/exams/{exam_id}/invites` via curl/Swagger).
 
-**All of this is baked into the `backend`/`worker`/`judge`/`beat` Docker images at build
+**All of this is baked into the `backend`/`worker`/`ai-worker`/`beat` Docker images at build
 time** — `docker-compose.yml` has no source bind-mount. `docker compose up -d --build`
 (not a plain `up -d`) is what picks up code changes.
 
@@ -121,8 +121,8 @@ docker compose up -d --build
 docker compose exec backend python -m scripts.seed
 ```
 
-7 containers should come up: `postgres`, `redis`, `backend`, `worker`, `judge`, `beat`,
-`frontend`. Keep `backend`'s Logs tab open.
+7 containers should come up: `postgres`, `redis`, `backend`, `worker`, `ai-worker`,
+`beat`, `frontend`. Keep `backend`'s Logs tab open.
 
 ```bash
 curl -s -X POST http://localhost:8000/api/auth/student/magic-link/request \

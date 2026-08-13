@@ -1,4 +1,4 @@
-import { LayoutGrid, LogOut, Menu, Users, X } from 'lucide-react';
+import { Code2, LayoutGrid, LogOut, Menu, Users, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { tokens } from '../api';
@@ -9,6 +9,7 @@ import DropdownMenu, { DropdownItem } from './DropdownMenu';
 const NAV = [
   { to: '/admin', label: 'Exams', icon: <LayoutGrid size={17} />, match: (p: string) => p === '/admin' || p.startsWith('/admin/exams') },
   { to: '/admin/student-details', label: 'Student Details', icon: <Users size={17} />, match: (p: string) => p.startsWith('/admin/student-details') },
+  { to: '/admin/coding-evaluation', label: 'Coding Evaluation', icon: <Code2 size={17} />, match: (p: string) => p.startsWith('/admin/coding-evaluation') },
 ];
 
 interface Props {

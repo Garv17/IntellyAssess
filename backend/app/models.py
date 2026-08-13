@@ -59,25 +59,24 @@ class AttemptStatus(str, enum.Enum):
     expired = "expired"
 
 
-class JudgeStatus(str, enum.Enum):
-    queued = "queued"
-    running = "running"
-    done = "done"
-    error = "error"
+class EvaluationStatus(str, enum.Enum):
+    """Lifecycle of one coding submission's evaluation. Only `finalized` ever
+    contributes to the exam score — an AI recommendation is never a mark."""
 
-
-class JudgeMode(str, enum.Enum):
-    sample = "sample"
-    final = "final"
-    # Ad-hoc run against student-typed input with no expected output to grade against.
-    custom = "custom"
+    pending = "pending"
+    ai_evaluating = "ai_evaluating"
+    ai_evaluated = "ai_evaluated"
+    ai_failed = "ai_failed"
+    admin_reviewed = "admin_reviewed"
+    finalized = "finalized"
 
 
 class ProblemType(str, enum.Enum):
     # The student's code is the whole program: it reads stdin, prints stdout.
     stdio = "stdio"
-    # The student writes only a function body; the judge supplies a generated
-    # driver that decodes structured parameters, calls it, and encodes the result.
+    # The student writes only a function body against a generated signature
+    # (see services/harness.py). Nothing wraps or runs it on this branch — the
+    # signature is what the student fills in and what the AI evaluator marks.
     function = "function"
 
 
@@ -277,14 +276,13 @@ class CodingProblem(Base, TimestampMixin):
     # for the valid type strings.
     parameters: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # SQL-only fields below. Only meaningful when "sql" is in allowed_languages.
-    # dialect is display metadata only — every dialect still executes on the
-    # sqlite sandbox in services/sandbox.py; there's no per-dialect judge yet.
+    # dialect is display metadata only — it labels the editor and tells the AI
+    # evaluator which dialect the answer should be written in.
     sql_dialect: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # Shared CREATE TABLE + INSERT script for the whole question — test cases no
-    # longer duplicate this in their own stdin (see TestCase.stdin below).
+    # Shared CREATE TABLE + INSERT script for the whole question, shown to the
+    # student as the schema explorer.
     sql_schema_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Optional display-only column names for the result grid; grading is still a
-    # raw text compare of expected_stdout, this never affects that.
+    # Optional display-only column names for the result grid.
     sql_result_columns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     question: Mapped[Question] = relationship(back_populates="coding_problem")
@@ -398,8 +396,16 @@ class Answer(Base):
     )
 
 
-class JudgeRun(Base):
-    __tablename__ = "judge_runs"
+class CodingSubmission(Base, TimestampMixin):
+    """A finalized coding answer, snapshotted at submit time.
+
+    Deliberately separate from `Answer` (which autosave keeps rewriting): once a
+    row exists here the code is frozen, so a late autosave flush can never mutate
+    what was actually submitted and evaluated. The AI recommendation and the
+    admin's decision are stored in disjoint column sets — `ai_*` is written only
+    by the evaluator and never overwritten by an admin edit."""
+
+    __tablename__ = "coding_submissions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     attempt_id: Mapped[uuid.UUID] = mapped_column(
@@ -408,30 +414,62 @@ class JudgeRun(Base):
     question_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("questions.id", ondelete="CASCADE"), nullable=False
     )
+    # Denormalized from the attempt so the admin review list can filter/sort by
+    # student without joining through exam_attempts on every query.
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
     language: Mapped[str] = mapped_column(String(32), nullable=False)
     code_text: Mapped[str] = mapped_column(Text, nullable=False)
-    mode: Mapped[JudgeMode] = mapped_column(Enum(JudgeMode, name="judge_mode"), nullable=False)
-    # Set when this run targets one specific sample case rather than all of them.
-    test_case_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("test_cases.id", ondelete="SET NULL"), nullable=True
-    )
-    # Set for JudgeMode.custom runs — student-typed input with no expected output.
-    custom_stdin: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Function-mode equivalent of custom_stdin above — ordered param values.
-    custom_params: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    status: Mapped[JudgeStatus] = mapped_column(
-        Enum(JudgeStatus, name="judge_status"), default=JudgeStatus.queued, nullable=False
-    )
-    passed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    results: Mapped[list | dict] = mapped_column(JSONB, default=list, nullable=False)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
+    submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Marks this question is worth, frozen at submit time so a later edit to the
+    # question's marks can't silently invalidate an already-finalized score.
+    max_marks: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
-    __table_args__ = (Index("ix_judge_runs_attempt_question", "attempt_id", "question_id"),)
+    status: Mapped[EvaluationStatus] = mapped_column(
+        Enum(EvaluationStatus, name="evaluation_status"),
+        default=EvaluationStatus.pending,
+        server_default=EvaluationStatus.pending.value,
+        nullable=False,
+        index=True,
+    )
+
+    # ---- AI recommendation (write-once, by the evaluator only) ----
+    ai_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # {"correctness": 4, "approach": 2, ...} — keys match the rubric's criteria.
+    ai_rubric_scores: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # {criterion_key: "why it scored what it did"} — same keys as ai_rubric_scores.
+    ai_rubric_justifications: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ai_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_strengths: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    ai_issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # A review signal, not a calibrated probability — see the rubric docs.
+    ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_requires_manual_review: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    ai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_rubric_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ai_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Never shown to students; the admin sees it to decide whether to retry.
+    ai_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ---- Admin decision (the only thing that becomes a mark) ----
+    final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    admin_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
+    )
+    admin_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # One submission per question per attempt. This is also the idempotency
+        # key that stops a retried submit from queueing a second evaluation.
+        UniqueConstraint("attempt_id", "question_id", name="uq_coding_submission_attempt_question"),
+        Index("ix_coding_submissions_attempt", "attempt_id"),
+    )
 
 
 class ExamInvite(Base, TimestampMixin):

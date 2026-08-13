@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models import AttemptStatus, ExamStatus, JudgeStatus, QuestionType
+from app.models import AttemptStatus, EvaluationStatus, ExamStatus, QuestionType
 
 
 class ORMModel(BaseModel):
@@ -26,8 +26,9 @@ class MagicLinkVerify(BaseModel):
 
 class MagicLinkSent(BaseModel):
     message: str = "If that email is registered, a sign-in link is on its way."
-    # Only ever populated when ENVIRONMENT=development, so loadtest.py can redeem a
-    # link without a real mailbox. Never set outside dev — see request_magic_link.
+    # Only ever populated when ENVIRONMENT=development, so a local sign-in can
+    # redeem a link without a real mailbox. Never set outside dev — see
+    # request_magic_link.
     dev_token: str | None = None
 
 
@@ -193,48 +194,6 @@ class SubmitReceipt(BaseModel):
     grading_pending: bool
 
 
-# ------------------------------------------------------------------- judge
-
-
-class CodeRunRequest(BaseModel):
-    question_id: uuid.UUID
-    language: str = Field(max_length=32)
-    code_text: str = Field(max_length=65536)
-    # Run against exactly one sample case (must have is_sample=True on this problem)...
-    test_case_id: uuid.UUID | None = None
-    # ...or ad-hoc input with no expected output to grade against. At most one of
-    # these two should be set; if neither is set, every sample case runs (legacy
-    # "run all samples" behavior).
-    custom_stdin: str | None = Field(default=None, max_length=8192)
-    # Function-mode equivalent of custom_stdin — ordered parameter values.
-    custom_params: list[Any] | None = None
-
-
-class CodeRunAccepted(BaseModel):
-    run_id: uuid.UUID
-    status: JudgeStatus
-
-
-class TestCaseResult(BaseModel):
-    index: int
-    passed: bool
-    stdin: str | None = None
-    expected: str | None = None
-    actual: str | None = None
-    stderr: str | None = None
-    time_ms: int | None = None
-    verdict: str
-
-
-class CodeRunOut(BaseModel):
-    run_id: uuid.UUID
-    status: JudgeStatus
-    passed: int
-    total: int
-    results: list[TestCaseResult] = []
-    error: str | None = None
-
-
 # ------------------------------------------------------------------- admin
 
 
@@ -325,16 +284,17 @@ class DIGroupCreate(BaseModel):
     questions: list[DIQuestionCreate] = Field(min_length=1)
 
 
-# Must match the keys in app.services.sandbox.LANGUAGES — that's what actually
-# knows how to compile/run each one.
+# The languages a student may pick in the editor. Nothing compiles or runs them
+# on this branch — the choice is stored with the submission and shown to the AI
+# evaluator and the reviewing admin.
 CodingLanguage = Literal["python", "javascript", "c", "cpp", "java", "sql"]
 
-# Display metadata only — every dialect still executes on the sqlite sandbox in
-# app.services.sandbox; there's no per-dialect judge yet.
+# Display metadata: labels the editor and tells the evaluator which dialect the
+# answer is expected to be written in.
 SqlDialect = Literal["sqlite", "mysql", "postgresql", "mssql"]
 
-# Must match app.services.harness.PARAM_TYPES — that's what actually knows how to
-# decode/encode each one, per language.
+# Must match app.services.harness.PARAM_TYPES — that's what renders each one into
+# the per-language starter code.
 ParamType = Literal[
     "int", "float", "bool", "string", "char",
     "int[]", "float[]", "bool[]", "string[]", "int[][]",
@@ -355,18 +315,6 @@ class BoilerplatePreviewRequest(BaseModel):
 
 class BoilerplatePreviewOut(BaseModel):
     code: str
-
-
-class SqlPreviewRequest(BaseModel):
-    # Schema/seed SQL for one test case — same text an admin would put in that
-    # case's `stdin`. Optional: a query with no setup (e.g. `SELECT 1;`) is valid.
-    setup_sql: str = ""
-    query_sql: str = Field(min_length=1)
-
-
-class SqlPreviewOut(BaseModel):
-    stdout: str
-    error: str | None = None
 
 
 class TestCaseCreate(BaseModel):
@@ -694,25 +642,112 @@ class DiContext(BaseModel):
     image_url: str | None
 
 
-class CodingCaseReview(BaseModel):
-    index: int
-    passed: bool
-    stdin: str | None
-    expected: str | None
-    actual: str | None
-    stderr: str | None
-    time_ms: int | None
-    verdict: str
+class RubricCriterionOut(BaseModel):
+    """One rubric line, paired with what the AI awarded for it. `awarded` is None
+    when there is no AI evaluation yet (or it failed)."""
+
+    key: str
+    description: str
+    max_marks: float
+    awarded: float | None = None
+    # The AI's reason for this criterion's score. None for evaluations produced
+    # before per-criterion justifications existed, or when there is none yet.
+    justification: str | None = None
+
+
+class CodingSubmissionOut(ORMModel):
+    """Admin-only. Never returned on any student-facing route — it carries the AI
+    reasoning, the admin's comment, and evaluation metadata."""
+
+    id: uuid.UUID
+    attempt_id: uuid.UUID
+    question_id: uuid.UUID
+    language: str
+    code_text: str
+    submitted_at: datetime
+    max_marks: float
+    status: EvaluationStatus
+
+    ai_score: float | None = None
+    ai_rubric_scores: dict[str, float] | None = None
+    ai_rubric_justifications: dict[str, str] | None = None
+    ai_reasoning: str | None = None
+    ai_strengths: list[str] | None = None
+    ai_issues: list[str] | None = None
+    ai_confidence: float | None = None
+    ai_requires_manual_review: bool = False
+    ai_model: str | None = None
+    ai_evaluated_at: datetime | None = None
+    ai_error: str | None = None
+
+    final_score: float | None = None
+    admin_comment: str | None = None
+    finalized_at: datetime | None = None
+
+    # Denormalized for the review screen.
+    student_name: str = ""
+    student_number: str = ""
+    exam_title: str = ""
+    question_body_md: str = ""
+    statement_md: str = ""
+    constraints_md: str | None = None
+    rubric_max_marks: float = 0.0
+    rubric: list[RubricCriterionOut] = []
+    # Derived: low AI confidence or the model asking for a human look.
+    manual_review_recommended: bool = False
+
+
+class CodingSubmissionListItem(BaseModel):
+    id: uuid.UUID
+    attempt_id: uuid.UUID
+    question_id: uuid.UUID
+    student_name: str
+    student_number: str
+    exam_id: uuid.UUID
+    exam_title: str
+    language: str
+    submitted_at: datetime
+    status: EvaluationStatus
+    # What this question is worth on the exam — the scale `final_score` uses.
+    max_marks: float
+    # ai_score is on the *rubric's* scale (rubric_max_marks), which is not
+    # necessarily the question's. Kept separate rather than pre-scaled so the
+    # recommendation always equals the sum of its own rubric breakdown.
+    ai_score: float | None = None
+    rubric_max_marks: float = 0.0
+    final_score: float | None = None
+    manual_review_recommended: bool = False
+
+
+class CodingSubmissionPage(BaseModel):
+    items: list[CodingSubmissionListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class CodingGradeRequest(BaseModel):
+    """Bounds are re-checked against the submission's own max_marks in the route —
+    the marks a question is worth aren't known at schema-validation time."""
+
+    final_score: float = Field(ge=0)
+    admin_comment: str | None = Field(default=None, max_length=4000)
+    # False saves a draft (ADMIN_REVIEWED); True finalizes, which is what makes the
+    # score count toward the exam total.
+    finalize: bool = False
 
 
 class CodingReview(BaseModel):
+    """The coding block inside an attempt's question-by-question review."""
+
+    submission_id: uuid.UUID | None = None
     language: str
     code_text: str
-    status: JudgeStatus
-    passed: int
-    total: int
-    score: float
-    cases: list[CodingCaseReview]
+    status: EvaluationStatus | None = None
+    ai_score: float | None = None
+    final_score: float | None = None
+    max_marks: float = 0.0
+    manual_review_recommended: bool = False
 
 
 class QuestionReview(BaseModel):
@@ -722,7 +757,9 @@ class QuestionReview(BaseModel):
     body_md: str
     marks: float
     negative_marks: float
-    status: Literal["correct", "incorrect", "skipped"]
+    # "pending" is coding-only: a submission awaiting an admin's final score is
+    # neither correct nor incorrect yet.
+    status: Literal["correct", "incorrect", "skipped", "pending"]
     student_answer: str | None
     correct_answer: str | None
     marks_awarded: float

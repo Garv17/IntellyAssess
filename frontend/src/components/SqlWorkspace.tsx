@@ -1,9 +1,9 @@
-import { AlertCircle, Loader2, Play } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type AnswerSave, type CodeRun, type CodingProblem, type Question } from '../api';
+import type { AnswerSave, CodingProblem, Question } from '../api';
 import { useVerticalSplit } from '../hooks/useResizablePanes';
 import CodeEditor from './CodeEditor';
 import Collapsible from './Collapsible';
+import NoExecutionNotice from './NoExecutionNotice';
 import Markdown from './Markdown';
 import Splitter from './Splitter';
 import SqlResultGrid from './SqlResultGrid';
@@ -23,18 +23,6 @@ const DIALECT_LABELS: Record<string, string> = {
   postgresql: 'PostgreSQL',
   mssql: 'SQL Server',
 };
-
-const VERDICT_INFO: Record<string, { label: string; className: string }> = {
-  accepted: { label: 'Accepted', className: 'ok' },
-  wrong_answer: { label: 'Wrong Answer', className: 'bad' },
-  tle: { label: 'Time Limit Exceeded', className: 'warn' },
-  mle: { label: 'Memory Limit Exceeded', className: 'warn' },
-  runtime_error: { label: 'Runtime Error', className: 'bad' },
-};
-
-function verdictInfo(verdict: string) {
-  return VERDICT_INFO[verdict] ?? { label: verdict, className: 'bad' };
-}
 
 /** The left-pane content for a SQL question: description/constraints in one
     capped, independently-scrolling region, and the schema explorer — also
@@ -102,10 +90,10 @@ export function SqlProblemPane({ problem }: { problem: CodingProblem }) {
   );
 }
 
-/** The center-pane content for a SQL question: editor on top, results below,
-    split by a draggable divider whose ratio is a percentage of the pane's own
-    height (not a fixed px number) so the editor keeps getting the majority of
-    the space at any zoom level or window size. */
+/** The center-pane content for a SQL question: editor on top, the question's
+    worked examples below, split by a draggable divider whose ratio is a
+    percentage of the pane's own height (not a fixed px number) so the editor
+    keeps getting the majority of the space at any zoom level or window size. */
 export function SqlEditorPane({
   question,
   answer,
@@ -117,9 +105,6 @@ export function SqlEditorPane({
 }) {
   const problem = question.coding_problem!;
   const [code, setCode] = useState(answer?.code_text ?? problem.starter_code.sql ?? '');
-  const [run, setRun] = useState<CodeRun | null>(null);
-  const [running, setRunning] = useState(false);
-  const pollRef = useRef<number | null>(null);
 
   const { containerRef, chromeTopRef, ratios, mins, resize } = useVerticalSplit(ROWS_KEY, DEFAULT_EDITOR_SHARE, {
     editorFloorPx: EDITOR_FLOOR_PX,
@@ -128,65 +113,13 @@ export function SqlEditorPane({
     resultsMaxPct: RESULTS_MAX_PCT,
   });
 
-  const [caseId, setCaseId] = useState<string | null>(problem.sample_test_cases[0]?.id ?? null);
-
-  useEffect(
-    () => () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
-    },
-    [],
-  );
-
-  const runCode = async () => {
-    if (!caseId) return;
-    setRunning(true);
-    setRun(null);
-    try {
-      const { run_id } = await api.runCode(question.id, 'sql', code, { testCaseId: caseId });
-      // Judging is queued, so poll rather than blocking a request for seconds.
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const result = await api.codeRun(run_id);
-          setRun(result);
-          if (result.status === 'done' || result.status === 'error') {
-            if (pollRef.current) window.clearInterval(pollRef.current);
-            setRunning(false);
-          }
-        } catch {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          setRunning(false);
-        }
-      }, 1200);
-    } catch (err) {
-      setRunning(false);
-      setRun({
-        run_id: '',
-        status: 'error',
-        passed: 0,
-        total: 0,
-        results: [],
-        error: err instanceof Error ? err.message : 'Run failed',
-      });
-    }
-  };
-
-  const result = run?.results[0];
   const dialectLabel = DIALECT_LABELS[problem.sql_dialect ?? 'sqlite'] ?? 'SQLite';
 
   return (
     <div className="cw-editor-inner" ref={containerRef}>
       <div className="editor-bar" ref={chromeTopRef}>
         <span className="sql-dialect-badge">{dialectLabel}</span>
-        <span className="muted">{problem.time_limit_ms} ms</span>
-        <button
-          className="btn"
-          style={{ marginLeft: 'auto' }}
-          onClick={() => void runCode()}
-          disabled={running || !caseId}
-        >
-          {running ? <Loader2 size={15} className="spinner" /> : <Play size={15} />}
-          {running ? 'Running…' : 'Run'}
-        </button>
+        <NoExecutionNotice />
       </div>
 
       <div className="editor-frame" style={{ flexGrow: ratios[0], flexBasis: 0, minHeight: mins[0] }}>
@@ -205,65 +138,14 @@ export function SqlEditorPane({
 
       <div className="sql-results-panel" style={{ flexGrow: ratios[1], flexBasis: 0, minHeight: mins[1] }}>
         {problem.sample_test_cases.length === 0 ? (
-          <p className="muted small">This question has no sample test cases to run against.</p>
+          <p className="muted small">This question has no worked examples.</p>
         ) : (
-          <div className="sql-case-chip-row">
-            {problem.sample_test_cases.map((tc, i) => (
-              <button
-                key={tc.id}
-                type="button"
-                className={`sql-case-chip ${caseId === tc.id ? 'active' : ''}`}
-                onClick={() => {
-                  setCaseId(tc.id);
-                  setRun(null);
-                }}
-              >
-                Case {i + 1}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {!run && <p className="muted small">Run your query to see the result here.</p>}
-
-        {run && run.error && (
-          <div className="sql-error-panel">
-            <AlertCircle size={15} />
-            <pre>{run.error}</pre>
-          </div>
-        )}
-
-        {run && !run.error && result && (
-          <>
-            <span className={`verdict-pill ${verdictInfo(result.verdict).className}`}>
-              {verdictInfo(result.verdict).label}
-            </span>
-            {result.stderr ? (
-              <div className="sql-error-panel">
-                <AlertCircle size={15} />
-                <pre>{result.stderr}</pre>
-              </div>
-            ) : (
-              <div className="sql-result-columns">
-                <div>
-                  <div className="sql-result-heading">Your Result</div>
-                  <SqlResultGrid
-                    text={result.actual}
-                    compareTo={result.expected}
-                    columnNames={problem.sql_result_columns}
-                    caption={result.time_ms != null ? `${result.time_ms} ms` : undefined}
-                  />
-                  {!result.actual && <p className="muted small">(empty result set)</p>}
-                </div>
-                {result.expected != null && (
-                  <div>
-                    <div className="sql-result-heading">Expected Result</div>
-                    <SqlResultGrid text={result.expected} columnNames={problem.sql_result_columns} />
-                  </div>
-                )}
-              </div>
-            )}
-          </>
+          problem.sample_test_cases.map((tc, i) => (
+            <div key={tc.id} className="sql-example-block">
+              <div className="sql-result-heading">Example {i + 1} — expected result</div>
+              <SqlResultGrid text={tc.expected_stdout} columnNames={problem.sql_result_columns} />
+            </div>
+          ))
         )}
       </div>
     </div>

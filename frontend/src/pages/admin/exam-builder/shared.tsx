@@ -11,14 +11,13 @@ export interface FormProps {
   onError: (msg: string) => void;
 }
 
-// Must match the keys in backend/app/services/sandbox.py's LANGUAGES dict — that's
-// what actually knows how to compile/run each one. SQL questions use the dedicated
+// Must match backend.app.schemas.CodingLanguage. SQL questions use the dedicated
 // SqlQuestionForm/SqlQuestionEditForm instead of this generic programming-language
 // form, so it isn't offered here as a checkbox.
 export const CODING_LANGUAGES = ['python', 'javascript', 'c', 'cpp', 'java'];
 
-// Display metadata only — every dialect still executes on the sqlite sandbox;
-// there's no per-dialect judge yet. Must match backend.app.schemas.SqlDialect.
+// Display metadata only — it labels the student's editor and tells the AI
+// evaluator which dialect to mark against. Must match backend.app.schemas.SqlDialect.
 export const SQL_DIALECTS: { value: string; label: string }[] = [
   { value: 'sqlite', label: 'SQLite' },
   { value: 'mysql', label: 'MySQL' },
@@ -29,23 +28,24 @@ export const SQL_DIALECTS: { value: string; label: string }[] = [
 // Must match app.services.harness.SUPPORTED_FUNCTION_LANGUAGES.
 export const FUNCTION_LANGUAGES = ['python', 'javascript', 'java', 'cpp', 'c'];
 
-// Must match app.services.harness.PARAM_TYPES — that's what actually knows how to
-// decode/encode each one, per language.
+// Must match app.services.harness.PARAM_TYPES — that's what renders each one into
+// the per-language starter code.
 export const PARAM_TYPES = [
   'int', 'float', 'bool', 'string', 'char',
   'int[]', 'float[]', 'bool[]', 'string[]', 'int[][]',
 ];
 
-// Test cases run through a real program — not a structured LeetCode-style function
-// call. This is the single most common way a coding question ends up broken: someone
-// pastes a problem statement's example table directly into stdin/expected output
-// instead of writing what the program actually reads and prints.
+// Test cases describe what a real program would read and print — not a structured
+// LeetCode-style function call. This is the single most common way a coding question
+// ends up unusable: someone pastes a problem statement's example table directly into
+// stdin/expected output instead of writing what the program actually reads and prints.
 export function codingCaseHint(): string {
   return (
     'stdin is exactly what a correct submission reads from standard input; expected ' +
-    "stdout is exactly what it prints (trailing whitespace per line is ignored). Write " +
-    "the literal input/output text; don't paste an example table from the problem " +
-    'statement.'
+    "stdout is exactly what it prints. Sample cases are shown to students as worked " +
+    'examples; hidden cases are optional and only give the AI evaluator extra context ' +
+    "about the intended behaviour. Write the literal input/output text; don't paste an " +
+    'example table from the problem statement.'
   );
 }
 
@@ -65,9 +65,9 @@ export function emptyParam(): ParamDef {
   return { name: '', type: 'int' };
 }
 
-/** Database dialect picker for SQL questions. Display metadata only — every
-    dialect still runs on the sqlite sandbox, so anything other than SQLite gets
-    an inline "coming soon" notice rather than pretending it actually executes. */
+/** Database dialect picker for SQL questions. Display metadata only: it labels
+    the student's editor and tells the AI evaluator which dialect to mark
+    against. Nothing executes the query either way. */
 export function SqlDialectPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <div className="field">
@@ -79,11 +79,6 @@ export function SqlDialectPicker({ value, onChange }: { value: string; onChange:
           </option>
         ))}
       </select>
-      {value !== 'sqlite' && (
-        <p className="muted small">
-          Coming soon — this problem will run on SQLite regardless of the dialect selected above.
-        </p>
-      )}
     </div>
   );
 }
@@ -118,21 +113,20 @@ export function SqlSchemaEditor({ value, onChange }: { value: string; onChange: 
   );
 }
 
-/** Per-test-case SQL fields: an optional rare per-case setup addendum, a
-    scratch reference query (not saved to the question, but lifted up to the
-    parent form so "Preview student view" can show it) to drive a real "run
-    it" preview, and the expected result — so an admin never has to
-    hand-compute a JOIN/GROUP BY result, the same trap the generic
-    stdin/expected-stdout hint warns about. */
+/** Per-test-case SQL fields: an optional rare per-case setup addendum, a scratch
+    reference query (not saved to the question, but lifted up to the parent form
+    so "Preview student view" can show it), and the expected result.
+
+    The reference query used to drive a real "run it" preview against the judge
+    sandbox. This build has no sandbox, so the expected result is typed in by
+    hand — the same as for every other language. */
 export function SqlTestCaseFields({
-  schemaSql,
   extraSetup,
   expectedStdout,
   referenceQuery,
   onReferenceQueryChange,
   onChange,
 }: {
-  schemaSql: string;
   extraSetup: string;
   expectedStdout: string;
   referenceQuery: string;
@@ -140,21 +134,6 @@ export function SqlTestCaseFields({
   onChange: (next: { stdin: string; expected_stdout: string }) => void;
 }) {
   const [showExtra, setShowExtra] = useState(extraSetup.trim().length > 0);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ stdout: string; error: string | null } | null>(null);
-
-  const run = async () => {
-    setBusy(true);
-    setResult(null);
-    const combinedSetup = extraSetup.trim() ? `${schemaSql}\n${extraSetup}` : schemaSql;
-    try {
-      setResult(await api.previewSql(combinedSetup, referenceQuery));
-    } catch (err) {
-      setResult({ stdout: '', error: err instanceof Error ? err.message : 'Preview failed' });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="stack">
@@ -175,7 +154,7 @@ export function SqlTestCaseFields({
         </label>
       )}
       <label>
-        Reference query (used only to run the preview below — not saved, not shown to students)
+        Reference query (your own working — not saved, not shown to students)
         <textarea
           value={referenceQuery}
           rows={3}
@@ -185,35 +164,6 @@ export function SqlTestCaseFields({
           onChange={(e) => onReferenceQueryChange(e.target.value)}
         />
       </label>
-      <div className="stack" style={{ gap: '0.4rem' }}>
-        <button
-          type="button"
-          className="btn"
-          disabled={busy || !referenceQuery.trim() || !schemaSql.trim()}
-          title={!schemaSql.trim() ? 'Fill in the schema above first' : undefined}
-          onClick={run}
-        >
-          {busy ? 'Running…' : 'Run reference query'}
-        </button>
-        {result?.error && (
-          <p className="small" style={{ color: 'var(--danger)' }}>
-            {result.error}
-          </p>
-        )}
-        {result && !result.error && (
-          <div className="stack" style={{ gap: '0.4rem' }}>
-            <SqlResultGrid text={result.stdout || ''} compact />
-            {!result.stdout && <p className="muted small">(empty result set)</p>}
-            <button
-              type="button"
-              className="btn link"
-              onClick={() => onChange({ stdin: extraSetup, expected_stdout: result.stdout })}
-            >
-              Use this as the expected result
-            </button>
-          </div>
-        )}
-      </div>
       <label>
         Expected result (one row per line, columns separated by |, no header)
         <textarea
@@ -266,7 +216,7 @@ export function MarkdownField({
 }
 
 /** Dynamic name+type parameter list for a function signature — add/remove rows,
-    type comes from the same closed registry the judge harness understands. */
+    type comes from the same closed registry the boilerplate generator understands. */
 export function ParametersEditor({
   parameters,
   onChange,
@@ -319,7 +269,7 @@ export function ParametersEditor({
 }
 
 /** Live boilerplate preview per language, fetched from the same
-    generate_boilerplate() the judge actually uses at run time — never a
+    generate_boilerplate() the server actually stores as starter code — never a
     hand-duplicated template — so this can never drift from what a student sees. */
 export function BoilerplatePreview({
   functionName,

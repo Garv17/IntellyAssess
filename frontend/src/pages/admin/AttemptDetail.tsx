@@ -9,7 +9,6 @@ import {
   FileQuestion,
   Hash,
   ListChecks,
-  Play,
   SkipForward,
   Trophy,
   XCircle,
@@ -20,21 +19,27 @@ import { api, type ActivityEvent, type AttemptOverview, type QuestionReview } fr
 import { Identity } from '../../components/Avatar';
 import Badge from '../../components/Badge';
 import { SkeletonCard, SkeletonText } from '../../components/Skeleton';
-import SqlResultGrid from '../../components/SqlResultGrid';
-import SqlSchemaExplorer from '../../components/SqlSchemaExplorer';
 import Tabs from '../../components/Tabs';
-import { parsePipeRows, parseSqlSetup } from '../../lib/sqlPreview';
 
 const STATUS_ICON: Record<QuestionReview['status'], React.ReactNode> = {
   correct: <CheckCircle2 size={16} className="urgent" style={{ color: 'var(--ok)' }} />,
   incorrect: <XCircle size={16} style={{ color: 'var(--danger)' }} />,
   skipped: <SkipForward size={16} style={{ color: 'var(--muted)' }} />,
+  pending: <Clock size={16} style={{ color: 'var(--warn)' }} />,
 };
 
-const STATUS_VARIANT: Record<QuestionReview['status'], 'success' | 'danger' | 'neutral'> = {
+const STATUS_VARIANT: Record<QuestionReview['status'], 'success' | 'danger' | 'neutral' | 'warning'> = {
   correct: 'success',
   incorrect: 'danger',
   skipped: 'neutral',
+  pending: 'warning',
+};
+
+const STATUS_LABEL: Record<QuestionReview['status'], string> = {
+  correct: 'correct',
+  incorrect: 'incorrect',
+  skipped: 'skipped',
+  pending: 'awaiting marking',
 };
 
 type TabKey = 'overview' | 'questions' | 'activity';
@@ -72,6 +77,7 @@ export default function AttemptDetail() {
   const correctCount = questions?.filter((q) => q.status === 'correct').length ?? 0;
   const incorrectCount = questions?.filter((q) => q.status === 'incorrect').length ?? 0;
   const skippedCount = questions?.filter((q) => q.status === 'skipped').length ?? 0;
+  const pendingCount = questions?.filter((q) => q.status === 'pending').length ?? 0;
 
   return (
     <div className="shell">
@@ -208,6 +214,12 @@ export default function AttemptDetail() {
                         <strong>{skippedCount}</strong>
                         <span>Skipped</span>
                       </div>
+                      {pendingCount > 0 && (
+                        <div className="stat">
+                          <strong style={{ color: 'var(--warn)' }}>{pendingCount}</strong>
+                          <span>Awaiting marking</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -297,7 +309,7 @@ function QuestionReviewCard({ q, index }: { q: QuestionReview; index: number }) 
         <span style={{ fontWeight: 600 }}>Q{index + 1}</span>
         <span className="badge badge-neutral">{q.type.toUpperCase()}</span>
         <span className="grow" />
-        <Badge variant={STATUS_VARIANT[q.status]}>{q.status}</Badge>
+        <Badge variant={STATUS_VARIANT[q.status]}>{STATUS_LABEL[q.status]}</Badge>
         <span className="muted small">
           {q.marks_awarded} / {q.marks} marks
         </span>
@@ -351,67 +363,30 @@ function CodingReviewBlock({ coding }: { coding: NonNullable<QuestionReview['cod
         {isSql ? <Database size={14} /> : <Code2 size={14} />}
         Language: <strong>{coding.language}</strong>
         {isSql && <span className="badge badge-info">SQL query</span>}
-        · Status: <strong>{coding.status}</strong> · {coding.passed} / {coding.total} test cases
-        passed · Score {coding.score.toFixed(2)}
+        {coding.status && (
+          <>
+            {' · '}Evaluation: <strong>{coding.status.replace(/_/g, ' ')}</strong>
+          </>
+        )}
+        {coding.ai_score != null && <> · AI recommended {coding.ai_score}</>}
+        {' · '}Final:{' '}
+        <strong>
+          {coding.final_score != null ? `${coding.final_score} / ${coding.max_marks}` : 'not finalized'}
+        </strong>
       </p>
-      <pre className="code-block">{coding.code_text}</pre>
-      {coding.cases.length > 0 && (
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Verdict</th>
-                <th>Time (ms)</th>
-                <th>{isSql ? 'Query input' : 'stdin'}</th>
-                <th>Expected</th>
-                <th>Actual</th>
-              </tr>
-            </thead>
-            <tbody>
-              {coding.cases.map((c) => (
-                <tr key={c.index}>
-                  <td>{c.index + 1}</td>
-                  <td>
-                    <Badge variant={c.passed ? 'success' : 'danger'} icon={c.passed ? <Play size={11} /> : <AlertTriangle size={11} />}>
-                      {c.verdict}
-                    </Badge>
-                  </td>
-                  <td>{c.time_ms ?? '—'}</td>
-                  <td>
-                    {isSql && c.stdin && parseSqlSetup(c.stdin).tables.length > 0 ? (
-                      <SqlSchemaExplorer sql={c.stdin} compact />
-                    ) : (
-                      <pre className="code-block small">{c.stdin ?? '—'}</pre>
-                    )}
-                  </td>
-                  <td>
-                    {isSql && parsePipeRows(c.expected).length > 0 ? (
-                      <SqlResultGrid text={c.expected} compact />
-                    ) : (
-                      <pre className="code-block small">{c.expected ?? '—'}</pre>
-                    )}
-                  </td>
-                  <td>
-                    {isSql && parsePipeRows(c.actual).length > 0 ? (
-                      <SqlResultGrid text={c.actual} compareTo={c.expected} compact />
-                    ) : (
-                      <pre className="code-block small">{c.actual ?? '—'}</pre>
-                    )}
-                    {c.stderr && (
-                      <pre className="sql-stderr" style={{ marginTop: '0.4rem' }}>
-                        {c.stderr}
-                      </pre>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+
+      {coding.manual_review_recommended && (
+        <p className="small urgent" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <AlertTriangle size={14} /> Manual Review Recommended
+        </p>
       )}
-      {coding.cases.length === 0 && (
-        <p className="muted small">No per-case results recorded for this submission.</p>
+
+      <pre className="code-block">{coding.code_text}</pre>
+
+      {coding.submission_id && (
+        <Link className="btn ghost small" to={`/admin/coding-evaluation/${coding.submission_id}`}>
+          <ListChecks size={14} /> Open in Coding Evaluation
+        </Link>
       )}
     </div>
   );

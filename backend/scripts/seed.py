@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import sqlalchemy as sa
 from sqlalchemy import select
 
 from app.db import Base, SessionLocal, engine
@@ -78,9 +80,35 @@ DI_QUESTIONS = [
 ]
 
 
+def _stamp_if_freshly_created(conn) -> None:
+    """Tell Alembic the schema is already current, on a database we just built.
+
+    `create_all` builds the schema straight from the models — that is, at head —
+    but leaves no alembic_version row. A fresh deploy that then runs
+    `alembic upgrade head` starts from base and replays the whole chain against a
+    schema that already has everything, failing on the first migration that
+    touches a table the models no longer define (`judge_runs`). Stamping closes
+    that gap, and it makes `upgrade head` the correct no-op it should be.
+
+    Only ever stamps when the version table is absent. On an existing database
+    that is mid-chain, stamping would silently skip the migrations it still needs.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    if sa.inspect(conn).has_table("alembic_version"):
+        return
+
+    cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    cfg.attributes["connection"] = conn
+    command.stamp(cfg, "head")
+    print("alembic: stamped head (schema created from models)")
+
+
 async def seed(student_count: int) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_stamp_if_freshly_created)
 
     async with SessionLocal() as db:
         email, name, password = DEMO_ADMIN
@@ -269,9 +297,10 @@ async def seed(student_count: int) -> None:
                     )
                 )
 
-            # SQL runs against a fresh in-memory DB per test case, so unlike the other
-            # languages here, a test case's stdin is schema/setup SQL rather than
-            # program input — see combine_stdin_with_code in services/sandbox.py.
+            # Unlike the other languages here, a SQL test case's stdin is the schema
+            # and seed rows the query is meant to run against, not program input.
+            # Nothing executes it — it's the expected-behaviour context the AI
+            # evaluator marks the submitted query against.
             sql_question = Question(
                 section_id=code_section.id,
                 type=QuestionType.coding,
@@ -491,170 +520,8 @@ async def seed(student_count: int) -> None:
         print("students sign in via magic link sent to their email, e.g. stu0001@example.com")
 
 
-async def seed_loadtest(student_count: int, duration_minutes: int) -> None:
-    """A dedicated exam + student pool for scripts/loadtest.py and ramp_loadtest.py,
-    kept separate from the demo cohort so a load test never collides with (or
-    inflates) real-looking data. LT-prefixed ids and cohort="loadtest" only ever
-    show up here."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async with SessionLocal() as db:
-        email, name, password = DEMO_ADMIN
-        admin = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
-        if admin is None:
-            admin = Admin(email=email, name=name, password_hash=hash_password(password))
-            db.add(admin)
-            await db.flush()
-            print(f"admin created: {email} / {password}")
-
-        exam = (
-            await db.execute(select(Exam).where(Exam.title == "Load Test Exam"))
-        ).scalar_one_or_none()
-        if exam is not None:
-            # Duration/window may need to grow for a longer run than last time.
-            exam.duration_minutes = duration_minutes
-            exam.ends_at = datetime.now(UTC) + timedelta(days=1)
-            exam.status = ExamStatus.published
-            print(f"load test exam already present; duration set to {duration_minutes}m")
-        else:
-            exam = Exam(
-                title="Load Test Exam",
-                description="Synthetic exam used only by scripts/loadtest.py.",
-                instructions_md="Answers save automatically. This exam is not scored.",
-                duration_minutes=duration_minutes,
-                status=ExamStatus.published,
-                starts_at=datetime.now(UTC) - timedelta(minutes=5),
-                ends_at=datetime.now(UTC) + timedelta(days=1),
-                randomize_questions=False,
-                randomize_options=False,
-                cohort="loadtest",
-                created_by=admin.id,
-            )
-            db.add(exam)
-            await db.flush()
-
-            section = Section(
-                exam_id=exam.id,
-                title="Section",
-                order_index=0,
-                marks_per_question=1.0,
-                negative_marks=0.0,
-            )
-            db.add(section)
-            await db.flush()
-            for idx, (body, options, correct) in enumerate(MCQS):
-                question = Question(
-                    section_id=section.id, type=QuestionType.mcq, body_md=body, order_index=idx
-                )
-                db.add(question)
-                await db.flush()
-                for oidx, option in enumerate(options):
-                    db.add(
-                        MCQOption(
-                            question_id=question.id,
-                            body=option,
-                            is_correct=oidx == correct,
-                            order_index=oidx,
-                        )
-                    )
-            print(f"load test exam created: {exam.id} ({duration_minutes}m, cohort=loadtest)")
-
-        # Added after the fact for exams seeded before coding support — checked every
-        # run so scripts/loadtest.py always has a coding question to save code_text
-        # against, not just MCQ options.
-        coding_section = (
-            await db.execute(
-                select(Section).where(Section.exam_id == exam.id, Section.title == "Coding")
-            )
-        ).scalar_one_or_none()
-        if coding_section is None:
-            coding_section = Section(
-                exam_id=exam.id,
-                title="Coding",
-                order_index=1,
-                marks_per_question=10.0,
-                negative_marks=0.0,
-            )
-            db.add(coding_section)
-            await db.flush()
-
-            code_question = Question(
-                section_id=coding_section.id,
-                type=QuestionType.coding,
-                body_md="Sum of two integers",
-                order_index=0,
-            )
-            db.add(code_question)
-            await db.flush()
-
-            problem = CodingProblem(
-                question_id=code_question.id,
-                statement_md=(
-                    "Read two space-separated integers from stdin and print their sum."
-                ),
-                allowed_languages=["python"],
-                time_limit_ms=2000,
-                memory_limit_mb=128,
-                starter_code={"python": "a, b = map(int, input().split())\nprint(a + b)\n"},
-            )
-            db.add(problem)
-            await db.flush()
-
-            for idx, (stdin, expected, is_sample, weight) in enumerate(
-                [("3 4", "7", True, 1), ("10 -2", "8", False, 1)]
-            ):
-                db.add(
-                    TestCase(
-                        coding_problem_id=problem.id,
-                        stdin=stdin,
-                        expected_stdout=expected,
-                        is_sample=is_sample,
-                        weight=weight,
-                        order_index=idx,
-                    )
-                )
-            print("load test exam: coding section added")
-
-        existing_ids = set(
-            (await db.execute(select(Student.student_id))).scalars()
-        )
-        created = 0
-        for i in range(1, student_count + 1):
-            sid = f"LT{i:04d}"
-            if sid in existing_ids:
-                continue
-            db.add(
-                Student(
-                    student_id=sid,
-                    name=f"Load Test {i:04d}",
-                    email=f"{sid.lower()}@example.com",
-                    cohort="loadtest",
-                )
-            )
-            created += 1
-
-        await db.commit()
-        print(f"load test students created: {created} (LT0001..LT{student_count:04d})")
-
-
-async def _run(students: int, loadtest: bool, loadtest_students: int, loadtest_duration: int) -> None:
-    # Both steps share the module-level async engine, which is bound to whichever
-    # event loop first used it — so they must run inside one asyncio.run(), not two.
-    await seed(students)
-    if loadtest:
-        await seed_loadtest(loadtest_students, loadtest_duration)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--students", type=int, default=25)
-    parser.add_argument(
-        "--loadtest", action="store_true", help="also seed the LT-prefixed loadtest cohort/exam"
-    )
-    parser.add_argument("--loadtest-students", type=int, default=250)
-    parser.add_argument(
-        "--loadtest-duration", type=int, default=120, help="minutes; must exceed the planned run length"
-    )
     args = parser.parse_args()
-    asyncio.run(_run(args.students, args.loadtest, args.loadtest_students, args.loadtest_duration))
+    asyncio.run(seed(args.students))

@@ -1,7 +1,7 @@
 // Best-effort rendering helpers for SQL test cases: turns the raw setup script
 // (CREATE TABLE + INSERT statements) and pipe-delimited result text into
 // structured data for preview components. This never touches grading — the
-// judge (backend/app/services/sandbox.py) still compares raw text byte for
+// stored expected output is still raw text, compared by a human reviewer byte for
 // byte. A parse miss here just means a caller falls back to raw <pre> text.
 
 export interface ParsedColumn {

@@ -12,7 +12,18 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.cache import ANSWERS, DIRTY
-from app.models import Answer, AttemptStatus, AuditLog, ExamAttempt, MCQOption, Question, QuestionType, Section
+from app.models import (
+    Answer,
+    AttemptStatus,
+    AuditLog,
+    CodingSubmission,
+    EvaluationStatus,
+    ExamAttempt,
+    MCQOption,
+    Question,
+    QuestionType,
+    Section,
+)
 from app.sync_db import publish_live_update_sync, session_scope, sync_redis
 from app.tasks.celery_app import celery_app
 
@@ -141,7 +152,9 @@ def _grade_objective_sync(session, attempt: ExamAttempt) -> tuple[float, float, 
         if question.type is QuestionType.coding:
             if answer is not None:
                 total += answer.score
-                if answer.is_correct is None and answer.code_text:
+                # See grading.grade_objective: .strip() keeps this in step with
+                # what _snapshot_submissions_sync below actually snapshots.
+                if answer.is_correct is None and (answer.code_text or "").strip():
                     coding_pending = True
             continue
 
@@ -155,13 +168,59 @@ def _grade_objective_sync(session, attempt: ExamAttempt) -> tuple[float, float, 
     return total, max_score, coding_pending
 
 
+def _snapshot_submissions_sync(session, attempt: ExamAttempt) -> list[str]:
+    """Sync mirror of app.services.coding.snapshot_submissions — freezes coding
+    answers when the sweeper, rather than the student, ends the attempt. Same
+    ON CONFLICT DO NOTHING idempotency: only rows created here come back, so a
+    re-swept attempt never queues a second evaluation."""
+    rows = session.execute(
+        select(Answer, Question, Section)
+        .join(Question, Answer.question_id == Question.id)
+        .join(Section, Question.section_id == Section.id)
+        .where(
+            Answer.attempt_id == attempt.id,
+            Question.type == QuestionType.coding,
+            Answer.code_text.isnot(None),
+        )
+    ).all()
+
+    values = []
+    for answer, question, section in rows:
+        if not (answer.code_text or "").strip():
+            continue
+        values.append(
+            {
+                "id": uuid.uuid4(),
+                "attempt_id": attempt.id,
+                "question_id": question.id,
+                "student_id": attempt.student_id,
+                "language": answer.language or "python",
+                "code_text": answer.code_text,
+                "max_marks": (
+                    question.marks if question.marks is not None else section.marks_per_question
+                ),
+                "status": EvaluationStatus.pending,
+            }
+        )
+    if not values:
+        return []
+
+    stmt = (
+        insert(CodingSubmission)
+        .values(values)
+        .on_conflict_do_nothing(constraint="uq_coding_submission_attempt_question")
+        .returning(CodingSubmission.id)
+    )
+    return [str(sid) for sid in session.execute(stmt).scalars()]
+
+
 @celery_app.task(name="maintenance.auto_submit_expired")
 def auto_submit_expired() -> dict[str, int]:
     """The safety net behind the client countdown. A student whose laptop dies at
     minute 59 still gets a graded submission."""
     now = datetime.now(UTC)
     submitted = 0
-    needs_coding_grade: list[str] = []
+    new_submission_ids: list[str] = []
     exam_ids: set[uuid.UUID] = set()
 
     with session_scope() as session:
@@ -188,6 +247,7 @@ def auto_submit_expired() -> dict[str, int]:
             attempt.total_score = score
             attempt.max_score = max_score
             attempt.grading_complete = not pending
+            new_submission_ids += _snapshot_submissions_sync(session, attempt)
             session.add(
                 AuditLog(
                     actor_type="system",
@@ -203,19 +263,21 @@ def auto_submit_expired() -> dict[str, int]:
             submitted += 1
             exam_ids.add(attempt.exam_id)
 
-            if pending:
-                needs_coding_grade.append(str(attempt.id))
-
     for exam_id in exam_ids:
         publish_live_update_sync(str(exam_id))
 
-    # Dispatched only after the `with` block commits: the judge worker reads
-    # attempts over its own connection, and would otherwise race the commit above.
-    if needs_coding_grade:
-        from app.tasks.judge_tasks import grade_attempt_coding
+    # Dispatched only after the `with` block commits: the evaluation worker reads
+    # these rows over its own connection, and would otherwise race the commit
+    # above. A broker failure here leaves the submissions saved at PENDING for an
+    # admin to re-run — it must never undo an auto-submit.
+    if new_submission_ids:
+        from app.tasks.ai_tasks import evaluate_coding_submission
 
-        for attempt_id in needs_coding_grade:
-            grade_attempt_coding.delay(attempt_id)
+        for submission_id in new_submission_ids:
+            try:
+                evaluate_coding_submission.delay(submission_id)
+            except Exception:
+                log.exception("could not queue AI evaluation for submission %s", submission_id)
 
     if submitted:
         log.info("auto-submitted %s expired attempts", submitted)

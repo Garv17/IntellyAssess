@@ -19,7 +19,7 @@ interface PreviewSampleCase {
 /** Read-only "what will the student see" preview for a SQL question draft —
     rendered from in-memory form state, no save required. Deliberately doesn't
     reuse the real student SqlWorkspace/run pipeline (that's wired to a real
-    question id and live judge state); this is a lightweight static mirror of
+    question id and saved state); this is a lightweight static mirror of
     its layout instead. */
 export default function SqlQuestionPreview({
   statementMd,

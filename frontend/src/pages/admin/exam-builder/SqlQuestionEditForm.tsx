@@ -157,7 +157,6 @@ export default function SqlQuestionEditForm({
               Case {i + 1} {c.is_sample ? '(sample)' : '(hidden)'}
             </legend>
             <SqlTestCaseFields
-              schemaSql={schemaSql}
               extraSetup={c.stdin}
               expectedStdout={c.expected_stdout}
               referenceQuery={c.referenceQuery}
