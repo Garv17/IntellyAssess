@@ -150,7 +150,7 @@ export default function Dashboard() {
                         <>
                           <a
                             className="btn primary full"
-                            href={`seb://${window.location.host}/uploads/seb/${exam.id}.seb`}
+                            href={`${window.location.protocol === 'https:' ? 'sebs' : 'seb'}://${window.location.host}/uploads/seb/${exam.id}.seb`}
                           >
                             Launch in Safe Exam Browser
                           </a>

@@ -63,7 +63,7 @@ export default function InviteLanding() {
             </p>
             <a
               className="btn primary full"
-              href={`seb://${window.location.host}/uploads/seb/${invite.exam_id}.seb`}
+              href={`${window.location.protocol === 'https:' ? 'sebs' : 'seb'}://${window.location.host}/uploads/seb/${invite.exam_id}.seb`}
             >
               <ShieldCheck size={15} style={{ verticalAlign: -2, marginRight: 6 }} />
               Launch Safe Exam Browser
