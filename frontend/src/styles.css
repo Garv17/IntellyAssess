@@ -753,6 +753,7 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   background: var(--gray-100); border-radius: var(--radius-full); color: var(--muted-strong);
 }
 .pill.danger { background: var(--red-100); color: var(--danger); }
+.pill.student-name { background: var(--gray-100); color: var(--muted-strong); font-weight: 700; }
 .review-toggle { margin-left: auto; font-size: 0.83rem; display: flex; align-items: center; gap: 0.4rem; font-weight: 550; color: var(--muted-strong); }
 
 .question-body { font-size: 1.02rem; margin: 0.5rem 0 1.1rem; white-space: pre-wrap; }
