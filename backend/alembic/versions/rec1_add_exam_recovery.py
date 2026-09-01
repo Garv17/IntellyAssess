@@ -1,7 +1,7 @@
 """add exam recovery table and reopen_count
 
 Revision ID: rec1
-Revises: ai02
+Revises: ai03
 Create Date: 2026-09-01
 
 Backs the temporary "resume a prematurely auto-submitted exam" safeguard
@@ -20,7 +20,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "rec1"
-down_revision: str | Sequence[str] | None = "ai02"
+down_revision: str | Sequence[str] | None = "ai03"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
