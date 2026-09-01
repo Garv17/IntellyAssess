@@ -8,7 +8,7 @@ import logging
 import secrets
 import statistics
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -49,6 +49,7 @@ from app.models import (
     EvaluationStatus,
     Exam,
     ExamAttempt,
+    ExamAttemptRecovery,
     ExamInvite,
     ExamStatus,
     MCQOption,
@@ -95,6 +96,11 @@ from app.schemas import (
     OptionAdminOut,
     OverviewStats,
     PublishResult,
+    BulkRecoveryRequest,
+    BulkRecoveryResult,
+    RecoveryCandidate,
+    RecoveryHistoryItem,
+    RecoveryItemResult,
     QuestionAdminOut,
     QuestionBankItem,
     QuestionBankPage,
@@ -114,7 +120,7 @@ from app.schemas import (
 )
 from app.security import create_magic_token
 from app.services import coding as coding_service
-from app.services import export, harness, paper
+from app.services import export, harness, paper, recovery as recovery_service
 from app.services.email import send_magic_link_email
 from app.services.rubric import get_rubric
 
@@ -1631,6 +1637,209 @@ async def extend_time(
         )
     )
     return {"deadline_at": attempt.deadline_at.isoformat()}
+
+
+# ---------------------------------------------------------------- exam recovery
+# Temporary safeguard for attempts prematurely auto-submitted by the (separately
+# tracked) false-410 incident. See app/services/recovery.py for why this only
+# ever flips an existing attempt back to in_progress — it never creates one.
+
+
+@router.get("/exams/{exam_id}/recovery-candidates", response_model=list[RecoveryCandidate])
+async def recovery_candidates(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> list[RecoveryCandidate]:
+    """Attempts on this exam that an admin could plausibly recover — i.e. every
+    auto_submitted attempt, regardless of whether it still has time left or has
+    hit the reopen cap (the UI needs to *show* those too, just disabled)."""
+    rows_result = await db.execute(
+        select(ExamAttempt, Student)
+        .join(Student, ExamAttempt.student_id == Student.id)
+        .where(ExamAttempt.exam_id == exam_id, ExamAttempt.status == AttemptStatus.auto_submitted)
+        .order_by(ExamAttempt.submitted_at.desc())
+    )
+    rows = rows_result.all()
+    if not rows:
+        return []
+
+    attempt_ids = [attempt.id for attempt, _ in rows]
+    answered_result = await db.execute(
+        select(Answer.attempt_id, func.count(Answer.id)).where(
+            Answer.attempt_id.in_(attempt_ids),
+            or_(Answer.selected_option_id.isnot(None), Answer.code_text.isnot(None)),
+        ).group_by(Answer.attempt_id)
+    )
+    answered_by_attempt = dict(answered_result.all())
+
+    latest_reason_result = await db.execute(
+        select(ExamAttemptRecovery.attempt_id, ExamAttemptRecovery.reason)
+        .where(ExamAttemptRecovery.attempt_id.in_(attempt_ids))
+        .order_by(ExamAttemptRecovery.attempt_id, ExamAttemptRecovery.created_at.desc())
+    )
+    latest_reason: dict[uuid.UUID, str] = {}
+    for aid, reason in latest_reason_result.all():
+        latest_reason.setdefault(aid, reason)
+
+    items = []
+    for attempt, student in rows:
+        remaining = recovery_service.remaining_seconds_for(attempt)
+        time_used = max(
+            0, int((attempt.submitted_at - attempt.started_at).total_seconds())
+        ) if attempt.submitted_at else 0
+        items.append(
+            RecoveryCandidate(
+                attempt_id=attempt.id,
+                student_id=student.student_id,
+                student_name=student.name,
+                email=student.email,
+                status=attempt.status,
+                time_used_seconds=time_used,
+                remaining_seconds=remaining,
+                answered_count=answered_by_attempt.get(attempt.id, 0),
+                reopen_count=attempt.reopen_count,
+                last_reason=latest_reason.get(attempt.id),
+            )
+        )
+    return items
+
+
+@router.post("/attempts/recovery", response_model=BulkRecoveryResult)
+async def bulk_recovery(payload: BulkRecoveryRequest, admin: AdminDep, db: DbDep) -> BulkRecoveryResult:
+    """Handles both a single attempt and a bulk selection — the frontend always
+    posts a list. Every id is re-validated here regardless of what the admin UI
+    showed as selectable; a bad id in the batch never affects the others."""
+    if payload.reason == "OTHER" and not payload.note:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A note is required when reason is OTHER")
+
+    results: list[RecoveryItemResult] = []
+    to_email: list[dict] = []
+
+    for attempt_id in payload.attempt_ids:
+        # A SAVEPOINT per attempt: one bad row (e.g. a race that flips the status
+        # underneath us) must not poison the whole batch's transaction and roll
+        # back everyone else's recovery along with it — same reasoning as the
+        # answer-flush sweeper's per-attempt savepoint (tasks/maintenance.py).
+        try:
+            async with db.begin_nested():
+                attempt = await db.get(ExamAttempt, attempt_id)
+                if attempt is None:
+                    results.append(
+                        RecoveryItemResult(attempt_id=attempt_id, student_id="", success=False, reason="Attempt not found")
+                    )
+                    continue
+                student = await db.get(Student, attempt.student_id)
+
+                if payload.action == "resume_now":
+                    outcome = await recovery_service.resume_attempt(
+                        db, attempt, reason=payload.reason, note=payload.note, admin_id=admin.id
+                    )
+                    if outcome.success:
+                        db.add(
+                            ExamAttemptRecovery(
+                                attempt_id=attempt.id,
+                                student_id=attempt.student_id,
+                                exam_id=attempt.exam_id,
+                                created_by=admin.id,
+                                reason=payload.reason,
+                                admin_note=payload.note,
+                                status="resumed",
+                                remaining_seconds=outcome.remaining_seconds,
+                                previous_status=outcome.previous_status or AttemptStatus.auto_submitted.value,
+                                previous_deadline_at=outcome.previous_deadline_at or attempt.deadline_at,
+                                new_deadline_at=outcome.new_deadline_at,
+                                resumed_at=datetime.now(UTC),
+                            )
+                        )
+                    results.append(
+                        RecoveryItemResult(
+                            attempt_id=attempt_id,
+                            student_id=student.student_id if student else "",
+                            success=outcome.success,
+                            remaining_seconds=outcome.remaining_seconds if outcome.success else None,
+                            reason=None if outcome.success else outcome.reason,
+                        )
+                    )
+                    continue
+
+                # send_resume_link
+                eligibility = await recovery_service.check_eligible(db, attempt)
+                if not eligibility.eligible:
+                    results.append(
+                        RecoveryItemResult(
+                            attempt_id=attempt_id, student_id=student.student_id if student else "",
+                            success=False, reason=eligibility.reason,
+                        )
+                    )
+                    continue
+
+                raw_token = secrets.token_urlsafe(32)
+                now = datetime.now(UTC)
+                record = ExamAttemptRecovery(
+                    attempt_id=attempt.id,
+                    student_id=attempt.student_id,
+                    exam_id=attempt.exam_id,
+                    created_by=admin.id,
+                    reason=payload.reason,
+                    admin_note=payload.note,
+                    status="pending",
+                    token_hash=recovery_service.hash_token(raw_token),
+                    token_expires_at=now + timedelta(minutes=settings.recovery_link_ttl_minutes),
+                    remaining_seconds=eligibility.remaining_seconds,
+                    previous_status=attempt.status.value,
+                    previous_deadline_at=attempt.deadline_at,
+                )
+                db.add(record)
+                await db.flush()
+
+                if student is not None:
+                    to_email.append(
+                        {"recovery_id": str(record.id), "email": student.email, "name": student.name, "token": raw_token}
+                    )
+                results.append(
+                    RecoveryItemResult(
+                        attempt_id=attempt_id, student_id=student.student_id if student else "",
+                        success=True, remaining_seconds=eligibility.remaining_seconds,
+                    )
+                )
+        except Exception:
+            log.exception("recovery action failed for attempt %s", attempt_id)
+            results.append(
+                RecoveryItemResult(attempt_id=attempt_id, student_id="", success=False, reason="Unexpected error")
+            )
+
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="recovery_bulk_requested",
+            meta={"action": payload.action, "reason": payload.reason, "count": len(payload.attempt_ids)},
+        )
+    )
+
+    if to_email:
+        from app.tasks.mailer_tasks import send_bulk_recovery_links
+
+        send_bulk_recovery_links.delay(to_email)
+
+    successful = sum(1 for r in results if r.success)
+    return BulkRecoveryResult(
+        total=len(results), successful=successful, failed=len(results) - successful, results=results
+    )
+
+
+@router.get("/attempts/{attempt_id}/recovery-history", response_model=list[RecoveryHistoryItem])
+async def recovery_history(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> list[RecoveryHistoryItem]:
+    rows_result = await db.execute(
+        select(ExamAttemptRecovery)
+        .where(ExamAttemptRecovery.attempt_id == attempt_id)
+        .order_by(ExamAttemptRecovery.created_at.desc())
+    )
+    return [
+        RecoveryHistoryItem(
+            id=r.id, reason=r.reason, admin_note=r.admin_note, status=r.status,
+            remaining_seconds=r.remaining_seconds, created_at=r.created_at,
+            sent_at=r.sent_at, opened_at=r.opened_at, resumed_at=r.resumed_at,
+        )
+        for r in rows_result.scalars()
+    ]
 
 
 # -------------------------------------------------------- results & analytics

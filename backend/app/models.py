@@ -354,6 +354,9 @@ class ExamAttempt(Base, TimestampMixin):
     # True only when the exam required SEB and the Config Key check passed at start.
     # Advisory record of the fact, not itself an enforcement point.
     seb_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # How many times an admin has reopened this attempt via the recovery feature.
+    # Capped by settings.max_reopen_count — see app/services/recovery.py.
+    reopen_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
     student: Mapped[Student] = relationship(back_populates="attempts")
     answers: Mapped[list[Answer]] = relationship(
@@ -493,6 +496,58 @@ class ExamInvite(Base, TimestampMixin):
     pin_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (UniqueConstraint("exam_id", "student_id", name="uq_invite_exam_student"),)
+
+
+class ExamAttemptRecovery(Base):
+    """One row per admin-initiated recovery attempt on an ExamAttempt — the audit
+    trail for the temporary "resume a prematurely auto-submitted exam" safeguard.
+    See app/services/recovery.py. Deliberately its own table rather than fields on
+    ExamAttempt: an attempt can be recovered up to settings.max_reopen_count times
+    and each one needs its own reason/token/timestamps preserved, not overwritten."""
+
+    __tablename__ = "exam_attempt_recoveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exam_attempts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
+    exam_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exams.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
+    )
+
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pending (link not yet sent) -> sent -> resumed, or failed.
+    # resume_now skips straight to resumed.
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+
+    # sha256 of the emailed token — never store it raw. Null for resume_now,
+    # which never generates a link.
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Frozen at record-creation time so a slow admin or a delayed email can never
+    # change how much time the student actually gets back.
+    remaining_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    new_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_attempt_recoveries_attempt_created", "attempt_id", "created_at"),)
 
 
 class AuditLog(Base):

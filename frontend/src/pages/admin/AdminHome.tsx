@@ -7,6 +7,7 @@ import {
   GraduationCap,
   KeyRound,
   Layers,
+  LifeBuoy,
   Loader2,
   Plus,
   Radio,
@@ -606,6 +607,9 @@ export default function AdminHome() {
                         </DropdownItem>
                         <DropdownItem icon={<BarChart3 size={15} />} onClick={() => navigate(`/admin/exams/${exam.id}/analytics`)}>
                           Analytics
+                        </DropdownItem>
+                        <DropdownItem icon={<LifeBuoy size={15} />} onClick={() => navigate(`/admin/exams/${exam.id}/recovery`)}>
+                          Exam recovery
                         </DropdownItem>
                         <DropdownItem
                           icon={<Download size={15} />}

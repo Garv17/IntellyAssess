@@ -5,13 +5,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
 from app.config import settings
-from app.models import Student
+from app.models import ExamAttemptRecovery, Student
 from app.security import create_magic_token
-from app.services.email import send_invite_email_sync, send_magic_link_email_sync
+from app.services.email import (
+    send_invite_email_sync,
+    send_magic_link_email_sync,
+    send_recovery_link_email_sync,
+)
 from app.sync_db import session_scope
 from app.tasks.celery_app import celery_app
 
@@ -58,4 +63,29 @@ def send_bulk_invites(items: list[dict]) -> dict:
         except Exception:
             log.exception("bulk invite send failed for %s", item["email"])
             failed += 1
+    return {"sent": sent, "failed": failed, "requested": len(items)}
+
+
+@celery_app.task(name="mailer.send_bulk_recovery_links")
+def send_bulk_recovery_links(items: list[dict]) -> dict:
+    """items: [{"recovery_id", "email", "name", "token"}, ...] — the raw token
+    exists only transiently in this task's payload; exam_attempt_recoveries only
+    ever stores its hash (see app/services/recovery.py). Marks each recovery
+    record's sent_at only on a successful send, so a failed send is visibly
+    still "pending" to the admin, not silently marked sent."""
+    sent, failed = 0, 0
+    with session_scope() as session:
+        for item in items:
+            link = f"{settings.frontend_base_url}/resume/{item['token']}"
+            try:
+                send_recovery_link_email_sync(item["email"], item["name"], link)
+            except Exception:
+                log.exception("bulk recovery-link send failed for %s", item["email"])
+                failed += 1
+                continue
+            sent += 1
+            record = session.get(ExamAttemptRecovery, uuid.UUID(item["recovery_id"]))
+            if record is not None:
+                record.sent_at = datetime.now(UTC)
+                record.status = "sent"
     return {"sent": sent, "failed": failed, "requested": len(items)}

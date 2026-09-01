@@ -271,6 +271,22 @@ export const api = {
     request<unknown>(`/api/admin/attempts/${attemptId}/force-submit`, { method: 'POST' }),
   resultsUrl: (examId: string) => `/api/admin/exams/${examId}/results.xlsx`,
 
+  recoveryCandidates: (examId: string) =>
+    request<RecoveryCandidate[]>(`/api/admin/exams/${examId}/recovery-candidates`),
+  bulkRecovery: (payload: {
+    attempt_ids: string[];
+    action: 'send_resume_link' | 'resume_now';
+    reason: RecoveryReason;
+    note?: string | null;
+  }) =>
+    request<BulkRecoveryResult>('/api/admin/attempts/recovery', { method: 'POST', body: payload }),
+  recoveryHistory: (attemptId: string) =>
+    request<RecoveryHistoryItem[]>(`/api/admin/attempts/${attemptId}/recovery-history`),
+  recoveryPreview: (token: string) =>
+    request<RecoveryPreview>(`/api/recovery/${encodeURIComponent(token)}`),
+  recoveryContinue: (token: string) =>
+    request<TokenPair>(`/api/recovery/${encodeURIComponent(token)}/continue`, { method: 'POST' }),
+
   attempts: (filters: AttemptFilters = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
@@ -704,6 +720,57 @@ export interface AttemptFilters {
   order?: 'asc' | 'desc';
   page?: number;
   page_size?: number;
+}
+export type RecoveryReason =
+  | 'UNEXPECTED_AUTO_SUBMIT'
+  | 'NETWORK_ISSUE'
+  | 'BROWSER_CRASH'
+  | 'SYSTEM_RESTART'
+  | 'SESSION_ISSUE'
+  | 'SERVER_OR_API_ISSUE'
+  | 'EXAM_PAGE_CLOSED'
+  | 'OTHER';
+export interface RecoveryCandidate {
+  attempt_id: string;
+  student_id: string;
+  student_name: string;
+  email: string | null;
+  status: string;
+  time_used_seconds: number;
+  remaining_seconds: number;
+  answered_count: number;
+  reopen_count: number;
+  last_reason: string | null;
+}
+export interface RecoveryItemResult {
+  attempt_id: string;
+  student_id: string;
+  success: boolean;
+  remaining_seconds: number | null;
+  reason: string | null;
+}
+export interface BulkRecoveryResult {
+  total: number;
+  successful: number;
+  failed: number;
+  results: RecoveryItemResult[];
+}
+export interface RecoveryHistoryItem {
+  id: string;
+  reason: string;
+  admin_note: string | null;
+  status: string;
+  remaining_seconds: number;
+  created_at: string;
+  sent_at: string | null;
+  opened_at: string | null;
+  resumed_at: string | null;
+}
+export interface RecoveryPreview {
+  exam_title: string;
+  answered_count: number;
+  remaining_seconds: number;
+  already_used: boolean;
 }
 export interface SectionScore {
   section_id: string;

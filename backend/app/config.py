@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # Grace period for in-flight requests that started just before the deadline.
     deadline_grace_seconds: int = 5
 
+    # Exam recovery (temporary safeguard while the premature-auto-submit root
+    # cause is fixed separately — see app/services/recovery.py). A resume link's
+    # own validity window is independent of the exam's remaining time: opening
+    # the link late never costs the student minutes, only waiting to click it
+    # after resuming would.
+    max_reopen_count: int = 10
+    recovery_link_ttl_minutes: int = 30
+
     # Coding submissions. This build is submission-only: student code is never
     # executed anywhere, it is persisted and graded by an AI evaluator + a human.
     submission_max_code_bytes: int = 64 * 1024

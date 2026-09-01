@@ -529,6 +529,74 @@ class InvitePinLogin(BaseModel):
     pin: str = Field(min_length=4, max_length=8)
 
 
+# ------------------------------------------------------------- exam recovery
+
+RecoveryReason = Literal[
+    "UNEXPECTED_AUTO_SUBMIT",
+    "NETWORK_ISSUE",
+    "BROWSER_CRASH",
+    "SYSTEM_RESTART",
+    "SESSION_ISSUE",
+    "SERVER_OR_API_ISSUE",
+    "EXAM_PAGE_CLOSED",
+    "OTHER",
+]
+
+
+class RecoveryCandidate(BaseModel):
+    attempt_id: uuid.UUID
+    student_id: str
+    student_name: str
+    email: str | None
+    status: AttemptStatus
+    time_used_seconds: int
+    remaining_seconds: int
+    answered_count: int
+    reopen_count: int
+    last_reason: str | None = None
+
+
+class BulkRecoveryRequest(BaseModel):
+    attempt_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    action: Literal["send_resume_link", "resume_now"]
+    reason: RecoveryReason
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class RecoveryItemResult(BaseModel):
+    attempt_id: uuid.UUID
+    student_id: str
+    success: bool
+    remaining_seconds: int | None = None
+    reason: str | None = None
+
+
+class BulkRecoveryResult(BaseModel):
+    total: int
+    successful: int
+    failed: int
+    results: list[RecoveryItemResult]
+
+
+class RecoveryHistoryItem(BaseModel):
+    id: uuid.UUID
+    reason: str
+    admin_note: str | None
+    status: str
+    remaining_seconds: int
+    created_at: datetime
+    sent_at: datetime | None
+    opened_at: datetime | None
+    resumed_at: datetime | None
+
+
+class RecoveryPreviewOut(BaseModel):
+    exam_title: str
+    answered_count: int
+    remaining_seconds: int
+    already_used: bool = False
+
+
 class PublishResult(BaseModel):
     exam_id: uuid.UUID
     status: ExamStatus

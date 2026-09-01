@@ -9,12 +9,14 @@ import InviteLanding from './pages/InviteLanding';
 import Login from './pages/Login';
 import MagicLinkCallback from './pages/MagicLinkCallback';
 import PinLogin from './pages/PinLogin';
+import ResumeExam from './pages/ResumeExam';
 import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
 import AttemptDetail from './pages/admin/AttemptDetail';
 import CodingEvaluation from './pages/admin/CodingEvaluation';
 import ExamBuilder from './pages/admin/ExamBuilder';
+import ExamRecovery from './pages/admin/ExamRecovery';
 import LiveMonitor from './pages/admin/LiveMonitor';
 import StudentDetails from './pages/admin/StudentDetails';
 import './styles.css';
@@ -36,6 +38,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/auth/magic" element={<MagicLinkCallback />} />
         <Route path="/invite" element={<InviteLanding />} />
         <Route path="/pin-login" element={<PinLogin />} />
+        <Route path="/resume/:token" element={<ResumeExam />} />
 
         <Route
           path="/dashboard"
@@ -91,6 +94,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Guard role="admin">
               <Analytics />
+            </Guard>
+          }
+        />
+        <Route
+          path="/admin/exams/:examId/recovery"
+          element={
+            <Guard role="admin">
+              <ExamRecovery />
             </Guard>
           }
         />

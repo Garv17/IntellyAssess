@@ -80,3 +80,31 @@ def send_invite_email_sync(to_email: str, to_name: str, exam_title: str, link: s
     if response.status_code >= 300:
         log.error("brevo send failed: %s %s", response.status_code, response.text)
         response.raise_for_status()
+
+
+def _recovery_link_payload(to_email: str, to_name: str, link: str) -> dict:
+    return {
+        "sender": {"name": settings.brevo_sender_name, "email": settings.brevo_sender_email},
+        "to": [{"email": to_email, "name": to_name}],
+        "subject": f"Resume your {settings.app_name} exam",
+        "htmlContent": (
+            f"<p>Hi {to_name},</p>"
+            "<p>Your exam session was interrupted. An administrator has restored your "
+            f'progress — <a href="{link}">click here to continue your exam</a> right where '
+            "you left off. Your previous answers are safe.</p>"
+            f"<p>This link expires in {settings.recovery_link_ttl_minutes} minutes and can "
+            "only be used once. Opening it late does not cost you exam time — your clock "
+            "only starts once you click Continue.</p>"
+        ),
+    }
+
+
+def send_recovery_link_email_sync(to_email: str, to_name: str, link: str) -> None:
+    """Blocking — used by the Celery bulk-recovery task, same reasoning as the
+    magic-link sync variant above."""
+    payload = _recovery_link_payload(to_email, to_name, link)
+    with httpx.Client(timeout=10) as client:
+        response = client.post(BREVO_ENDPOINT, json=payload, headers=_headers())
+    if response.status_code >= 300:
+        log.error("brevo send failed: %s %s", response.status_code, response.text)
+        response.raise_for_status()
