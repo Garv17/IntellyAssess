@@ -117,7 +117,11 @@ async def seed(student_count: int) -> None:
         email, name, password = DEMO_ADMIN
         admin = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
         if admin is None:
-            admin = Admin(email=email, name=name, password_hash=hash_password(password))
+            # super_admin so the demo account can immediately reach Admin
+            # Management, rather than needing a second manual promotion step.
+            admin = Admin(
+                email=email, name=name, password_hash=hash_password(password), role="super_admin"
+            )
             db.add(admin)
             await db.flush()
             # This used to print the plaintext password to stdout, which Docker

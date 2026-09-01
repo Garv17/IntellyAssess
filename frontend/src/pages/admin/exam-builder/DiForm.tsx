@@ -1,4 +1,4 @@
-import { ImagePlus } from 'lucide-react';
+import { ImagePlus, X } from 'lucide-react';
 import { useState } from 'react';
 import { api, type Difficulty } from '../../../api';
 import { useToast } from '../../../components/Toast';
@@ -9,16 +9,20 @@ export default function DiForm({ sectionId, onDone, onError }: FormProps) {
   const [title, setTitle] = useState('');
   const [passage, setPassage] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [questions, setQuestions] = useState([
     { body: '', explanation: '', options: ['', '', '', ''], correct: 0, tags: [] as string[], difficulty: null as Difficulty | null },
   ]);
 
   const upload = async (file: File) => {
+    setUploading(true);
     try {
       const { image_url } = await api.uploadImage(file);
       setImageUrl(image_url);
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Image upload failed');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -63,18 +67,28 @@ export default function DiForm({ sectionId, onDone, onError }: FormProps) {
         Set title
         <input value={title} onChange={(e) => setTitle(e.target.value)} required />
       </label>
-      <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex', width: 'fit-content' }}>
-        <ImagePlus size={15} /> Choose image
-        <input
-          type="file"
-          accept="image/*"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void upload(file);
-          }}
-        />
-      </label>
+      <div className="row-form">
+        <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex', width: 'fit-content' }}>
+          <ImagePlus size={15} /> {uploading ? 'Uploading…' : imageUrl ? 'Replace image' : 'Choose image'}
+          <input
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void upload(file);
+              // Reset so re-selecting the exact same filename (common with
+              // screenshot tools) still triggers a change event next time.
+              e.target.value = '';
+            }}
+          />
+        </label>
+        {imageUrl && (
+          <button type="button" className="btn ghost" onClick={() => setImageUrl('')}>
+            <X size={14} /> Remove image
+          </button>
+        )}
+      </div>
       {imageUrl && (
         <div className="preview">
           <img src={imageUrl} alt="Group stimulus preview" />

@@ -1,16 +1,23 @@
-import { Code2, LayoutGrid, LogOut, Menu, Users, X } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { Code2, LayoutGrid, LogOut, Menu, ShieldCheck, Users, X } from 'lucide-react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { tokens } from '../api';
+import { api, tokens } from '../api';
 import logo from '../assets/logo.png';
 import { Identity } from './Avatar';
 import DropdownMenu, { DropdownItem } from './DropdownMenu';
 
-const NAV = [
+const BASE_NAV = [
   { to: '/admin', label: 'Exams', icon: <LayoutGrid size={17} />, match: (p: string) => p === '/admin' || p.startsWith('/admin/exams') },
   { to: '/admin/student-details', label: 'Student Details', icon: <Users size={17} />, match: (p: string) => p.startsWith('/admin/student-details') },
   { to: '/admin/coding-evaluation', label: 'Coding Evaluation', icon: <Code2 size={17} />, match: (p: string) => p.startsWith('/admin/coding-evaluation') },
 ];
+
+const ADMIN_MANAGEMENT_NAV = {
+  to: '/admin/admins',
+  label: 'Admin Management',
+  icon: <ShieldCheck size={17} />,
+  match: (p: string) => p.startsWith('/admin/admins'),
+};
 
 interface Props {
   title: ReactNode;
@@ -23,6 +30,19 @@ export default function AppShell({ title, actions, adminName, children }: Props)
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+
+  useEffect(() => {
+    // Purely for nav visibility — the actual authorization boundary is
+    // enforced server-side (current_super_admin), so a failure here just
+    // hides a link rather than granting or denying access to anything.
+    void api
+      .me()
+      .then((me) => setIsSuperAdmin(me.role === 'super_admin'))
+      .catch(() => {});
+  }, []);
+
+  const NAV = isSuperAdmin ? [...BASE_NAV, ADMIN_MANAGEMENT_NAV] : BASE_NAV;
 
   const signOut = () => {
     tokens.clear();

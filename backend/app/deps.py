@@ -124,6 +124,21 @@ async def current_admin(
     return admin
 
 
+async def current_super_admin(
+    admin: Annotated[Admin, Depends(current_admin)],
+) -> Admin:
+    """Admin Management (adding/removing/updating admin accounts) is a strictly
+    higher privilege than the rest of the admin console — a compromised or
+    careless regular admin must never be able to mint themselves more admins."""
+    if admin.role != "super_admin":
+        log.warning(
+            "authorization denied",
+            extra={"reason": "super_admin_role_required", "admin_id": str(admin.id)},
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super admin access required")
+    return admin
+
+
 async def active_attempt(
     student: Annotated[Student, Depends(current_student)],
     db: Annotated[AsyncSession, Depends(get_db)],

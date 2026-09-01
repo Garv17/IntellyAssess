@@ -1,6 +1,7 @@
 import { Copy, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api, type Difficulty, type QuestionBankItem } from '../../../api';
+import Markdown from '../../../components/Markdown';
 import { SkeletonText } from '../../../components/Skeleton';
 import { useToast } from '../../../components/Toast';
 
@@ -88,7 +89,9 @@ export default function QuestionBankPanel({
         items.map((item) => (
           <div key={item.question_id} className="bank-item">
             <div className="grow">
-              <div className="body-preview">{item.body_preview}</div>
+              <div className="body-preview">
+                <Markdown>{item.body_preview}</Markdown>
+              </div>
               <div className="bank-meta">
                 <span className="badge badge-neutral">{item.type}</span>
                 {item.difficulty && <span className={`badge difficulty-${item.difficulty}`}>{item.difficulty}</span>}

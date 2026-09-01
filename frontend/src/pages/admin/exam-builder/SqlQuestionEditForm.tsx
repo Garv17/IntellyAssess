@@ -102,7 +102,7 @@ export default function SqlQuestionEditForm({
           Problem title
           <input value={title} onChange={(e) => setTitle(e.target.value)} required />
         </label>
-        <MarkdownField label="Description (Markdown)" value={statement} onChange={setStatement} required />
+        <MarkdownField label="Description (Markdown)" value={statement} onChange={setStatement} required allowImageUpload onError={onError} />
         <MarkdownField
           label="Constraints / instructions (Markdown, optional)"
           value={constraints}

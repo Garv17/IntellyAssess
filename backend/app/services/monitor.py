@@ -95,7 +95,9 @@ async def build_live_snapshot(db: AsyncSession, exam_id: uuid.UUID) -> LiveMonit
     # Runs on every monitor poll and every pub/sub push, so this is the
     # highest-volume line in the system — but it is also the only record of
     # snapshot latency, which is what "the Live Monitor is lagging" turns into.
-    # If the volume becomes a problem, raise LOG_LEVEL rather than deleting it.
+    # Silenced by default (see Settings.log_live_monitor / logging_config.py) so
+    # it doesn't bury everything else while an admin tails logs during a live
+    # exam; turn LOG_LIVE_MONITOR on when that latency is the thing in question.
     log.info(
         "live snapshot built",
         extra={

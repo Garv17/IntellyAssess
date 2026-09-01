@@ -1,8 +1,9 @@
-import { BookMarked, Code2, Database, ListChecks, Plus, Rocket, Table2, Upload } from 'lucide-react';
+import { BookMarked, Code2, Database, Edit3, ListChecks, Plus, Rocket, Table2, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, type PublishResult, type Section } from '../../api';
 import AppShell from '../../components/AppShell';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { errorContext, log } from '../../logger';
 import BulkForm from './exam-builder/BulkForm';
@@ -28,6 +29,15 @@ export default function ExamBuilder() {
   const [problems, setProblems] = useState<string[]>([]);
   const [listVersion, setListVersion] = useState(0);
   const [publishing, setPublishing] = useState(false);
+  const [editingSection, setEditingSection] = useState<Section | null>(null);
+  const [sectionEditForm, setSectionEditForm] = useState({
+    title: '',
+    instructions: '',
+    marks_per_question: 1,
+    negative_marks: 0,
+  });
+  const [deletingSection, setDeletingSection] = useState<Section | null>(null);
+  const [deletingSectionBusy, setDeletingSectionBusy] = useState(false);
 
   const load = async () => {
     const list = await api.sections(examId);
@@ -60,6 +70,52 @@ export default function ExamBuilder() {
       toast.success('Section added');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed');
+    }
+  };
+
+  const openEditSection = (section: Section) => {
+    setEditingSection(section);
+    setSectionEditForm({
+      title: section.title,
+      instructions: section.instructions ?? '',
+      marks_per_question: section.marks_per_question ?? 1,
+      negative_marks: section.negative_marks ?? 0,
+    });
+  };
+
+  const saveSectionEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSection) return;
+    setError(null);
+    try {
+      await api.updateSection(editingSection.id, {
+        title: sectionEditForm.title,
+        instructions: sectionEditForm.instructions || null,
+        marks_per_question: Number(sectionEditForm.marks_per_question),
+        negative_marks: Number(sectionEditForm.negative_marks),
+      });
+      setEditingSection(null);
+      await load();
+      toast.success('Section updated');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not update the section');
+    }
+  };
+
+  const confirmDeleteSection = async () => {
+    if (!deletingSection) return;
+    setDeletingSectionBusy(true);
+    try {
+      await api.deleteSection(deletingSection.id);
+      if (activeSection === deletingSection.id) setActiveSection('');
+      setDeletingSection(null);
+      await load();
+      toast.success('Section deleted');
+    } catch (err) {
+      log.warn('section delete failed', { section_id: deletingSection.id, ...errorContext(err) });
+      toast.error(err instanceof Error ? err.message : 'Could not delete the section');
+    } finally {
+      setDeletingSectionBusy(false);
     }
   };
 
@@ -159,13 +215,30 @@ export default function ExamBuilder() {
 
         <div className="chip-row">
           {sections.map((section) => (
-            <button
-              key={section.id}
-              className={`chip ${activeSection === section.id ? 'active' : ''}`}
-              onClick={() => setActiveSection(section.id)}
-            >
-              {section.title} · {section.question_count ?? 0}
-            </button>
+            <div key={section.id} className="chip-with-actions">
+              <button
+                className={`chip ${activeSection === section.id ? 'active' : ''}`}
+                onClick={() => setActiveSection(section.id)}
+              >
+                {section.title} · {section.question_count ?? 0}
+              </button>
+              <button
+                type="button"
+                className="chip-action"
+                title="Edit section"
+                onClick={() => openEditSection(section)}
+              >
+                <Edit3 size={13} />
+              </button>
+              <button
+                type="button"
+                className="chip-action danger"
+                title="Delete section"
+                onClick={() => setDeletingSection(section)}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           ))}
         </div>
       </section>
@@ -254,6 +327,82 @@ export default function ExamBuilder() {
             onError={setError}
           />
         </section>
+      )}
+
+      {editingSection && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3>Edit section</h3>
+            <form onSubmit={saveSectionEdit}>
+              <div className="stack">
+                <label>
+                  Title
+                  <input
+                    value={sectionEditForm.title}
+                    onChange={(e) => setSectionEditForm({ ...sectionEditForm, title: e.target.value })}
+                    required
+                  />
+                </label>
+                <div className="row-form">
+                  <label>
+                    Marks / question
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={sectionEditForm.marks_per_question}
+                      onChange={(e) =>
+                        setSectionEditForm({ ...sectionEditForm, marks_per_question: Number(e.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Negative marks
+                    <input
+                      type="number"
+                      step="0.25"
+                      value={sectionEditForm.negative_marks}
+                      onChange={(e) =>
+                        setSectionEditForm({ ...sectionEditForm, negative_marks: Number(e.target.value) })
+                      }
+                    />
+                  </label>
+                </div>
+                <label>
+                  Instructions
+                  <input
+                    value={sectionEditForm.instructions}
+                    onChange={(e) => setSectionEditForm({ ...sectionEditForm, instructions: e.target.value })}
+                    placeholder="Optional"
+                  />
+                </label>
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="btn" onClick={() => setEditingSection(null)}>
+                  Cancel
+                </button>
+                <button className="btn primary" type="submit">
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {deletingSection && (
+        <ConfirmDialog
+          title="Delete section?"
+          description={
+            <>
+              This will permanently delete <strong>{deletingSection.title}</strong> and every
+              question in it. This cannot be undone.
+            </>
+          }
+          confirmLabel="Delete section"
+          busy={deletingSectionBusy}
+          onConfirm={() => void confirmDeleteSection()}
+          onCancel={() => setDeletingSection(null)}
+        />
       )}
     </AppShell>
   );

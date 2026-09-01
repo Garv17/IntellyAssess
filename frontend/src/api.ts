@@ -233,6 +233,10 @@ export const api = {
   sections: (examId: string) => request<Section[]>(`/api/admin/exams/${examId}/sections`),
   createSection: (examId: string, payload: unknown) =>
     request<Section>(`/api/admin/exams/${examId}/sections`, { method: 'POST', body: payload }),
+  updateSection: (sectionId: string, payload: unknown) =>
+    request<Section>(`/api/admin/sections/${sectionId}`, { method: 'PATCH', body: payload }),
+  deleteSection: (sectionId: string) =>
+    request<void>(`/api/admin/sections/${sectionId}`, { method: 'DELETE' }),
   createMcq: (sectionId: string, payload: unknown) =>
     request<unknown>(`/api/admin/sections/${sectionId}/questions`, { method: 'POST', body: payload }),
   createDiGroup: (sectionId: string, payload: unknown) =>
@@ -265,6 +269,11 @@ export const api = {
     }),
   updateDiGroup: (groupId: string, payload: unknown) =>
     request<DIGroupDetail>(`/api/admin/di-groups/${groupId}`, { method: 'PATCH', body: payload }),
+  addDiGroupQuestion: (groupId: string, payload: unknown) =>
+    request<DIGroupDetail>(`/api/admin/di-groups/${groupId}/questions`, {
+      method: 'POST',
+      body: payload,
+    }),
   deleteQuestion: (questionId: string) =>
     request<void>(`/api/admin/questions/${questionId}`, { method: 'DELETE' }),
   deleteDiGroup: (groupId: string) =>
@@ -394,6 +403,16 @@ export const api = {
     request<CodingSubmissionDetail>(`/api/admin/coding-submissions/${submissionId}/re-evaluate`, {
       method: 'POST',
     }),
+
+  admins: () => request<AdminUser[]>('/api/admin/admins'),
+  createAdmin: (payload: { email: string; name: string; password: string; role: AdminRole }) =>
+    request<AdminUser>('/api/admin/admins', { method: 'POST', body: payload }),
+  updateAdmin: (
+    adminId: string,
+    payload: { name?: string; role?: AdminRole; is_active?: boolean; password?: string },
+  ) => request<AdminUser>(`/api/admin/admins/${adminId}`, { method: 'PATCH', body: payload }),
+  deleteAdmin: (adminId: string) =>
+    request<void>(`/api/admin/admins/${adminId}`, { method: 'DELETE' }),
 };
 
 /** Downloads a protected file by fetching it with the auth header, then saving the blob. */
@@ -678,6 +697,15 @@ export interface Student {
   cohort: string | null;
   is_active: boolean;
 }
+export type AdminRole = 'admin' | 'super_admin';
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  is_active: boolean;
+  created_at: string;
+}
 export interface PublishResult {
   exam_id: string;
   status: string;
@@ -739,6 +767,10 @@ export interface AttemptListItem {
   total_score: number | null;
   max_score: number | null;
   percentage: number | null;
+  aptitude_score: number;
+  aptitude_max: number;
+  coding_score: number;
+  coding_max: number;
   started_at: string | null;
   submitted_at: string | null;
   time_taken_minutes: number | null;

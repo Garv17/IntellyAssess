@@ -84,7 +84,7 @@ export default function CodingForm({ sectionId, onDone, onError }: FormProps) {
         Problem title
         <input value={title} onChange={(e) => setTitle(e.target.value)} required />
       </label>
-      <MarkdownField label="Description (Markdown)" value={statement} onChange={setStatement} required />
+      <MarkdownField label="Description (Markdown)" value={statement} onChange={setStatement} required allowImageUpload onError={onError} />
       <MarkdownField
         label="Constraints (Markdown, optional)"
         value={constraints}

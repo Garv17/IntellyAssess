@@ -268,6 +268,12 @@ def setup_logging(force: bool = False) -> None:
     if settings.log_sql:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
+    # Same idea as log_sql: a high-volume line gets its own opt-in knob instead
+    # of sharing the global level, so quieting it never costs you every other
+    # module's INFO lines too. See Settings.log_live_monitor.
+    monitor_floor = logging.INFO if settings.log_live_monitor else logging.WARNING
+    logging.getLogger("app.services.monitor").setLevel(max(monitor_floor, level))
+
     _configured = True
 
 

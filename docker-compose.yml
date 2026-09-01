@@ -10,6 +10,7 @@ x-backend-env: &backend-env
   UPLOAD_DIR: /app/uploads
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_FORMAT: ${LOG_FORMAT:-json}
+  LOG_LIVE_MONITOR: ${LOG_LIVE_MONITOR:-false}
   CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:5180","http://localhost:8080"]'}
  
 x-backend-env-file: &backend-env-file

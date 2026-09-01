@@ -1,7 +1,7 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Flag, Timer } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ApiError, api, type AnswerSave, type ExamPaper } from '../api';
+import { ApiError, api, type AnswerSave, type ExamPaper, type Me } from '../api';
 import CodingWorkspace from '../components/CodingWorkspace';
 import { CodingEditorPane, CodingProblemPane } from '../components/CodingView';
 import QuestionNavigator from '../components/QuestionNavigator';
@@ -22,6 +22,7 @@ function isTypingTarget(el: EventTarget | null): boolean {
 export default function Exam() {
   const navigate = useNavigate();
   const [paper, setPaper] = useState<ExamPaper | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [initialSeconds, setInitialSeconds] = useState(0);
   const [cursor, setCursor] = useState(0);
@@ -85,9 +86,14 @@ export default function Exam() {
   useEffect(() => {
     (async () => {
       try {
-        const [state, questions] = await Promise.all([api.examState(), api.examQuestions()]);
+        const [state, questions, identity] = await Promise.all([
+          api.examState(),
+          api.examQuestions(),
+          api.me().catch(() => null),
+        ]);
         setInitialSeconds(state.seconds_remaining);
         setPaper(questions);
+        setMe(identity);
         const map: AnswerMap = {};
         for (const answer of state.answers) map[answer.question_id] = answer;
         setAnswers(map);
@@ -168,6 +174,12 @@ export default function Exam() {
           <strong>{paper.title}</strong>
           <span className="muted"> · {current.section.title}</span>
         </div>
+        {me && (
+          <div className="exam-bar-student">
+            <span>{me.name}</span>
+            <span className="muted"> · Enrolment No: {me.identifier}</span>
+          </div>
+        )}
         <div className="exam-bar-right">
           <SaveIndicator status={autoSave.status} lastSavedAt={autoSave.lastSavedAt} />
           <div className="timer" aria-live="off">

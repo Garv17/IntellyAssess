@@ -163,6 +163,38 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
     rows = await db.execute(query.order_by(order_expr.nullslast()))
     results = rows.all()
 
+    attempt_ids = [attempt.id for attempt, _, _ in results]
+    breakdown: dict[uuid.UUID, dict[str, float]] = {
+        attempt_id: {"aptitude_score": 0.0, "aptitude_max": 0.0, "coding_score": 0.0, "coding_max": 0.0}
+        for attempt_id in attempt_ids
+    }
+    if attempt_ids:
+        # Same per-question max-marks fallback (`Question.marks` or else
+        # `Section.marks_per_question`) as the single-attempt overview, batched
+        # across every exported attempt.
+        breakdown_rows = await db.execute(
+            select(
+                ExamAttempt.id,
+                Question.type,
+                Answer.score,
+                Question.marks,
+                Section.marks_per_question,
+            )
+            .select_from(ExamAttempt)
+            .join(Section, Section.exam_id == ExamAttempt.exam_id)
+            .join(Question, Question.section_id == Section.id)
+            .outerjoin(
+                Answer, and_(Answer.question_id == Question.id, Answer.attempt_id == ExamAttempt.id)
+            )
+            .where(ExamAttempt.id.in_(attempt_ids))
+        )
+        for attempt_id, qtype, score, marks, marks_per_question in breakdown_rows.all():
+            bucket = breakdown[attempt_id]
+            max_marks = marks if marks is not None else marks_per_question
+            prefix = "coding" if qtype is QuestionType.coding else "aptitude"
+            bucket[f"{prefix}_score"] += score or 0.0
+            bucket[f"{prefix}_max"] += max_marks or 0.0
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Attempts"
@@ -173,7 +205,11 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
         "Cohort",
         "Exam",
         "Status",
-        "Score",
+        "Aptitude Score",
+        "Aptitude Max",
+        "Coding Score",
+        "Coding Max",
+        "Total Score",
         "Max Score",
         "Percentage",
         "Started At",
@@ -190,6 +226,7 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
         score = attempt.total_score
         max_score = attempt.max_score
         pct = round(score / max_score * 100, 2) if score is not None and max_score else None
+        bucket = breakdown[attempt.id]
         duration = None
         if attempt.submitted_at and attempt.started_at:
             duration = round(
@@ -208,6 +245,10 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
                 student.cohort,
                 exam.title,
                 attempt.status.value,
+                round(bucket["aptitude_score"], 2),
+                round(bucket["aptitude_max"], 2),
+                round(bucket["coding_score"], 2),
+                round(bucket["coding_max"], 2),
                 score,
                 max_score,
                 pct,

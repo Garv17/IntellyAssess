@@ -348,6 +348,19 @@ directly. ERROR is an app fault that needs a human. Health probes (`/health`,
 `/ready`, `/`) are not access-logged unless they fail; loops and per-row work log
 an aggregate count, never a line per row.
 
+**Volume control per module, not just globally.** `LOG_LEVEL` is a blunt
+instrument — raising it to hide one noisy line hides every other module's INFO
+along with it, including the ones an admin tailing logs during a live exam
+actually wants (logins, submissions, auto-submits). Where one line is legitimately
+high-volume, it gets its own settings flag instead, following the pattern
+`LOG_SQL` set for SQLAlchemy echo: `LOG_LIVE_MONITOR` (default off) governs
+`app.services.monitor`'s "live snapshot built" line, which fires on every
+Live Monitor rebuild — every answer-flush cycle for every exam with activity —
+and is the highest-volume line in the system on a busy exam day. It carries the
+only record of snapshot latency, so it isn't deleted, just silenced by default;
+flip the flag on specifically when "the dashboard is lagging" is the thing being
+diagnosed.
+
 **Secrets and PII never reach a sink.** The formatter redacts any field whose name
 contains `password`, `token`, `secret`, `api_key`, `authorization`, `cookie`,
 `pin`, `config_key`, `hash` and similar — recursively, depth-bounded. Emails go

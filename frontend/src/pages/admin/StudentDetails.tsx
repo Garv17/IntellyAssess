@@ -257,8 +257,10 @@ export default function StudentDetails() {
                   </th>
                   <th>Batch</th>
                   <th>Status</th>
+                  <th>Aptitude</th>
+                  <th>Coding</th>
                   <th className={`sortable ${sort === 'score' ? 'sorted' : ''}`} onClick={() => toggleSort('score')}>
-                    Score <SortIcon column="score" />
+                    Total <SortIcon column="score" />
                   </th>
                   <th className={`sortable ${sort === 'percentage' ? 'sorted' : ''}`} onClick={() => toggleSort('percentage')}>
                     % <SortIcon column="percentage" />
@@ -282,6 +284,12 @@ export default function StudentDetails() {
                     <td>{item.cohort ?? '—'}</td>
                     <td>
                       <span className={`tag ${item.status}`}>{item.status}</span>
+                    </td>
+                    <td className="num">
+                      {item.aptitude_max ? `${item.aptitude_score} / ${item.aptitude_max}` : '—'}
+                    </td>
+                    <td className="num">
+                      {item.coding_max ? `${item.coding_score} / ${item.coding_max}` : '—'}
                     </td>
                     <td className="num">
                       {item.total_score != null ? item.total_score : '—'}

@@ -207,3 +207,58 @@ def test_student_serializers_never_expose_answer_keys():
 
     for model in (OptionOut, QuestionOut, CodingProblemOut):
         assert "is_correct" not in model.model_fields
+
+
+# --------------------------------------------------------------------- question bank preview
+
+
+def test_body_preview_collapses_images_instead_of_truncating_mid_tag():
+    from app.routers.admin import _body_preview
+
+    # A naive body_md[:140] slice would cut this image tag before its closing
+    # paren, leaving broken markdown (`![diagram](/uploads/abc`) in the preview.
+    body = "x" * 130 + "![diagram](/uploads/abc123-a-very-long-filename.png) more text"
+    preview = _body_preview(body, limit=140)
+    assert "![" not in preview
+    assert "(/uploads/" not in preview
+    assert "[image]" in preview
+
+
+def test_body_preview_short_body_is_unchanged():
+    from app.routers.admin import _body_preview
+
+    assert _body_preview("What is 2 + 2?") == "What is 2 + 2?"
+
+
+def test_body_preview_replaces_every_image_before_truncating():
+    from app.routers.admin import _body_preview
+
+    body = "![a](url1) some text ![b](url2) more text"
+    preview = _body_preview(body, limit=200)
+    assert preview == "[image] some text [image] more text"
+
+
+# --------------------------------------------------------------------- admin management authz
+
+
+def test_current_super_admin_allows_super_admin_role():
+    import asyncio
+
+    from app.deps import current_super_admin
+
+    fake_admin = SimpleNamespace(id=uuid.uuid4(), role="super_admin")
+    result = asyncio.run(current_super_admin(admin=fake_admin))
+    assert result is fake_admin
+
+
+def test_current_super_admin_rejects_plain_admin_role():
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.deps import current_super_admin
+
+    fake_admin = SimpleNamespace(id=uuid.uuid4(), role="admin")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(current_super_admin(admin=fake_admin))
+    assert exc_info.value.status_code == 403

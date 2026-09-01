@@ -1,10 +1,12 @@
-import { ChevronRight, GripVertical, ImagePlus, Trash2 } from 'lucide-react';
+import { ChevronRight, GripVertical, ImagePlus, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { api, type DIGroupDetail, type QuestionDetail } from '../../../api';
+import { api, type DIGroupDetail, type Difficulty, type QuestionDetail } from '../../../api';
 import ConfirmDialog from '../../../components/ConfirmDialog';
+import Markdown from '../../../components/Markdown';
 import { SkeletonText } from '../../../components/Skeleton';
 import { useToast } from '../../../components/Toast';
 import CodingEditForm from './CodingEditForm';
+import { DifficultyPicker, TagInput } from './shared';
 import McqEditForm from './McqEditForm';
 import SqlQuestionEditForm from './SqlQuestionEditForm';
 
@@ -18,6 +20,16 @@ interface DragProps {
   onDragOver: (e: React.DragEvent) => void;
   onDragEnd: () => void;
   onDrop: (e: React.DragEvent) => void;
+}
+
+// Mirrors the backend's _body_preview (app/routers/admin.py): collapse an
+// image tag to a placeholder before truncating, so a long body's collapsed
+// header never cuts a `![alt](url)` tag mid-syntax and shows the broken
+// remainder as literal text.
+const MD_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
+function bodyPreview(bodyMd: string, limit = 140): string {
+  const text = bodyMd.replace(MD_IMAGE, '[image]');
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 const NO_DRAG: DragProps = {
@@ -236,7 +248,7 @@ function QuestionRow({ question, dragProps, wrapClass, onSaved, onDelete, onErro
     );
   }
 
-  const preview = question.body_md.length > 140 ? `${question.body_md.slice(0, 140)}…` : question.body_md;
+  const preview = bodyPreview(question.body_md);
 
   return (
     <div className={`question-card ${wrapClass}`} {...dragProps}>
@@ -279,7 +291,9 @@ function QuestionRow({ question, dragProps, wrapClass, onSaved, onDelete, onErro
               ))}
             </div>
           )}
-          <p className="question-body">{question.body_md}</p>
+          <div className="question-body">
+            <Markdown>{question.body_md}</Markdown>
+          </div>
           {question.type !== 'coding' && (
             <div className="options">
               {question.options.map((o, i) => (
@@ -292,7 +306,7 @@ function QuestionRow({ question, dragProps, wrapClass, onSaved, onDelete, onErro
           )}
           {question.explanation_md && (
             <div className="explanation-block">
-              <strong>Explanation:</strong> {question.explanation_md}
+              <strong>Explanation:</strong> <Markdown>{question.explanation_md}</Markdown>
             </div>
           )}
         </div>
@@ -320,16 +334,21 @@ function DiGroupRow({
 }) {
   const [open, setOpen] = useState(false);
   const [editingMeta, setEditingMeta] = useState(false);
+  const [addingQuestion, setAddingQuestion] = useState(false);
   const [title, setTitle] = useState(group.title);
   const [passage, setPassage] = useState(group.passage_md ?? '');
   const [imageUrl, setImageUrl] = useState(group.image_url ?? '');
+  const [uploading, setUploading] = useState(false);
 
   const upload = async (file: File) => {
+    setUploading(true);
     try {
       const { image_url } = await api.uploadImage(file);
       setImageUrl(image_url);
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Image upload failed');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -369,6 +388,16 @@ function DiGroupRow({
           {editingMeta ? 'Close' : 'Edit set'}
         </button>
         <button
+          className="btn small"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAddingQuestion((v) => !v);
+            setOpen(true);
+          }}
+        >
+          <Plus size={13} /> {addingQuestion ? 'Cancel' : 'Add question'}
+        </button>
+        <button
           className="btn small ghost danger"
           onClick={(e) => {
             e.stopPropagation();
@@ -387,18 +416,29 @@ function DiGroupRow({
                 Set title
                 <input value={title} onChange={(e) => setTitle(e.target.value)} required />
               </label>
-              <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex', width: 'fit-content' }}>
-                <ImagePlus size={15} /> Choose image
-                <input
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) void upload(file);
-                  }}
-                />
-              </label>
+              <div className="row-form">
+                <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex', width: 'fit-content' }}>
+                  <ImagePlus size={15} /> {uploading ? 'Uploading…' : imageUrl ? 'Replace image' : 'Choose image'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void upload(file);
+                      // Reset so picking the exact same file again (e.g. a
+                      // screenshot tool that always overwrites the same name)
+                      // still fires a change event next time.
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {imageUrl && (
+                  <button type="button" className="btn ghost" onClick={() => setImageUrl('')}>
+                    <X size={14} /> Remove image
+                  </button>
+                )}
+              </div>
               {imageUrl && (
                 <div className="preview">
                   <img src={imageUrl} alt="Group stimulus preview" />
@@ -427,8 +467,106 @@ function DiGroupRow({
               />
             ))}
           </div>
+
+          {addingQuestion && (
+            <AddDiQuestionForm
+              groupId={group.id}
+              onDone={() => {
+                setAddingQuestion(false);
+                onSaved();
+              }}
+              onCancel={() => setAddingQuestion(false)}
+              onError={onError}
+            />
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+/** Appends one more question to an already-saved DI set. Previously the only
+    way to add a question here was reopening the "Grouped Questions" create
+    form, which always created a brand-new group instead of extending this
+    one — see POST /di-groups/{id}/questions. */
+function AddDiQuestionForm({
+  groupId,
+  onDone,
+  onCancel,
+  onError,
+}: {
+  groupId: string;
+  onDone: () => void;
+  onCancel: () => void;
+  onError: (msg: string) => void;
+}) {
+  const toast = useToast();
+  const [body, setBody] = useState('');
+  const [explanation, setExplanation] = useState('');
+  const [options, setOptions] = useState(['', '', '', '']);
+  const [correct, setCorrect] = useState(0);
+  const [tags, setTags] = useState<string[]>([]);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.addDiGroupQuestion(groupId, {
+        body_md: body,
+        explanation_md: explanation || null,
+        options: options.map((text, i) => ({ body: text, is_correct: i === correct, order_index: i })),
+        tags,
+        difficulty,
+      });
+      toast.success('Question added to the group');
+      onDone();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to add question');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="stack sub-card">
+      <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={2} required placeholder="Question text" />
+      {options.map((option, i) => (
+        <label key={i} className="option-row">
+          <input type="radio" name={`add-di-correct-${groupId}`} checked={correct === i} onChange={() => setCorrect(i)} title="Mark as correct" />
+          <span className="option-letter">{String.fromCharCode(65 + i)}</span>
+          <input
+            value={option}
+            onChange={(e) => {
+              const next = [...options];
+              next[i] = e.target.value;
+              setOptions(next);
+            }}
+            required
+          />
+        </label>
+      ))}
+      <label>
+        Explanation (optional)
+        <textarea value={explanation} onChange={(e) => setExplanation(e.target.value)} rows={2} />
+      </label>
+      <div className="field">
+        <span className="field-label">Tags</span>
+        <TagInput tags={tags} onChange={setTags} />
+      </div>
+      <div className="field">
+        <span className="field-label">Difficulty</span>
+        <DifficultyPicker value={difficulty} onChange={setDifficulty} />
+      </div>
+      <div className="form-actions">
+        <button className="btn primary" disabled={saving}>
+          {saving ? 'Adding…' : 'Add to group'}
+        </button>
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }

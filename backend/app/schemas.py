@@ -238,6 +238,14 @@ class SectionCreate(BaseModel):
     negative_marks: float = 0.0
 
 
+class SectionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    instructions: str | None = None
+    order_index: int | None = None
+    marks_per_question: float | None = None
+    negative_marks: float | None = None
+
+
 class SectionAdminOut(ORMModel):
     id: uuid.UUID
     exam_id: uuid.UUID
@@ -495,6 +503,38 @@ class StudentUpdate(BaseModel):
     is_active: bool | None = None
 
 
+# ---------------------------------------------------------- admin management
+# Managing admin accounts is a super-admin-only surface — see
+# app.deps.current_super_admin. Password is write-only: it is hashed before
+# storage and never appears in any *Out schema.
+
+AdminRole = Literal["admin", "super_admin"]
+
+
+class AdminCreate(BaseModel):
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    role: AdminRole = "admin"
+
+
+class AdminUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    role: AdminRole | None = None
+    is_active: bool | None = None
+    # Only set when an admin's password is being reset.
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class AdminOut(ORMModel):
+    id: uuid.UUID
+    email: str
+    name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+
 class BulkResult(BaseModel):
     created: int
     skipped: int
@@ -596,6 +636,10 @@ class AttemptListItem(BaseModel):
     total_score: float | None
     max_score: float | None
     percentage: float | None
+    aptitude_score: float
+    aptitude_max: float
+    coding_score: float
+    coding_max: float
     started_at: datetime | None
     submitted_at: datetime | None
     time_taken_minutes: float | None

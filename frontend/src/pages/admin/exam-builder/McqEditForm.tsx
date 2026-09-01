@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, type Difficulty, type QuestionDetail } from '../../../api';
-import { DifficultyPicker, TagInput } from './shared';
+import { DifficultyPicker, MarkdownField, TagInput } from './shared';
 
 export default function McqEditForm({
   question,
@@ -42,10 +42,7 @@ export default function McqEditForm({
 
   return (
     <form onSubmit={submit} className="stack sub-card">
-      <label>
-        Question
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} required />
-      </label>
+      <MarkdownField label="Question" value={body} onChange={setBody} rows={3} required allowImageUpload onError={onError} />
       {options.map((option, i) => (
         <label key={i} className="option-row">
           <input

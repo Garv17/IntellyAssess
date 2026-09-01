@@ -14,6 +14,7 @@ import PinLogin from './pages/PinLogin';
 import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
+import AdminManagement from './pages/admin/AdminManagement';
 import AttemptDetail from './pages/admin/AttemptDetail';
 import CodingEvaluation from './pages/admin/CodingEvaluation';
 import ExamBuilder from './pages/admin/ExamBuilder';
@@ -130,6 +131,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Guard role="admin">
               <AttemptDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/admin/admins"
+          element={
+            <Guard role="admin">
+              <AdminManagement />
             </Guard>
           }
         />

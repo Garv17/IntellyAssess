@@ -4,6 +4,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import re
 import secrets
 import statistics
 import uuid
@@ -33,9 +34,9 @@ from sqlalchemy.orm import selectinload
 from app import cache
 from app.config import settings
 from app.db import get_db
-from app.deps import current_admin
+from app.deps import current_admin, current_super_admin
 from app.logging_config import get_logger, mask_email
-from app.security import decode_token
+from app.security import decode_token, hash_password
 from app.services.monitor import build_live_snapshot
 from app.ws_manager import live_connections
 from app.models import (
@@ -62,6 +63,9 @@ from app.models import (
 from app.schemas import (
     ActivityEvent,
     ActivityTimeline,
+    AdminCreate,
+    AdminOut,
+    AdminUpdate,
     AnalyticsOut,
     AttemptListItem,
     AttemptListPage,
@@ -82,6 +86,7 @@ from app.schemas import (
     DIGroupAdminOut,
     DIGroupCreate,
     DIGroupUpdate,
+    DIQuestionCreate,
     DiContext,
     ExamCreate,
     ExamOut,
@@ -105,6 +110,7 @@ from app.schemas import (
     SectionAdminOut,
     SectionCreate,
     SectionReorderRequest,
+    SectionUpdate,
     RubricCriterionOut,
     SectionScore,
     StudentCreate,
@@ -326,6 +332,55 @@ async def list_sections(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> list[
     return out
 
 
+@router.patch("/sections/{section_id}", response_model=SectionAdminOut)
+async def update_section(
+    section_id: uuid.UUID, payload: SectionUpdate, admin: AdminDep, db: DbDep
+) -> SectionAdminOut:
+    section = await _get_section(db, section_id)
+    await _assert_editable(db, section.exam_id)
+
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(section, field, value)
+    await db.flush()
+    log.info(
+        "section updated",
+        extra={
+            "section_id": str(section_id),
+            "exam_id": str(section.exam_id),
+            "admin_id": str(admin.id),
+            "updated_fields": sorted(updates),
+        },
+    )
+    count = await db.scalar(
+        select(func.count(Question.id)).where(Question.section_id == section_id)
+    )
+    out = SectionAdminOut.model_validate(section)
+    out.question_count = count or 0
+    return out
+
+
+@router.delete("/sections/{section_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_section(section_id: uuid.UUID, admin: AdminDep, db: DbDep) -> None:
+    """Cascades to every question and DI group in the section — the same
+    all-or-nothing tradeoff `delete_exam` makes, gated by the same
+    _assert_editable guard so a live exam's paper can't be pulled out from
+    under a student mid-attempt."""
+    section = await _get_section(db, section_id)
+    await _assert_editable(db, section.exam_id)
+
+    exam_id = section.exam_id
+    await db.delete(section)
+    log.info(
+        "section deleted",
+        extra={
+            "section_id": str(section_id),
+            "exam_id": str(exam_id),
+            "admin_id": str(admin.id),
+        },
+    )
+
+
 # --------------------------------------------------------------- questions
 
 
@@ -433,7 +488,10 @@ async def list_section_di_groups(
         select(DIGroup)
         .where(DIGroup.section_id == section_id)
         .options(selectinload(DIGroup.questions).selectinload(Question.options))
-        .order_by(DIGroup.order_index)
+        # created_at breaks ties between groups that share an order_index (e.g.
+        # several created before order_index was assigned incrementally) so the
+        # list renders in a stable order across reloads instead of shuffling.
+        .order_by(DIGroup.order_index, DIGroup.created_at)
     )
     return [
         DIGroupAdminOut(
@@ -527,6 +585,22 @@ async def reorder_section(
     return {"status": "ok"}
 
 
+# Matches a Markdown image tag: ![alt text](url). Question bodies embed images
+# this way (see MarkdownField's "Insert image" button on the frontend); a plain
+# character-count slice for a preview can land mid-tag (e.g. cut right before the
+# closing paren) and leave broken, half-rendered markdown behind.
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _body_preview(body_md: str, limit: int = 140) -> str:
+    """Short plain-text preview of a question body. Images collapse to a
+    "[image]" placeholder before truncating, rather than truncating through raw
+    markdown syntax, which would otherwise show a mangled `![alt](/uploads/f`
+    with no closing paren."""
+    text = _MD_IMAGE.sub("[image]", body_md)
+    return f"{text[:limit]}…" if len(text) > limit else text
+
+
 @router.get("/question-bank", response_model=QuestionBankPage)
 async def question_bank(
     admin: AdminDep,
@@ -575,7 +649,7 @@ async def question_bank(
             section_id=s.id,
             section_title=s.title,
             type=q.type,
-            body_preview=(q.body_md[:140] + "…") if len(q.body_md) > 140 else q.body_md,
+            body_preview=_body_preview(q.body_md),
             marks=q.marks,
             tags=(q.meta or {}).get("tags", []),
             difficulty=(q.meta or {}).get("difficulty"),
@@ -855,12 +929,31 @@ async def create_di_group(
                 "Each DI question must have exactly one correct option",
             )
 
+    # Always append at the end of the section's block order (standalone questions
+    # and DI groups share one ordering space — see reorder_section) rather than
+    # trusting the client's order_index, which the exam builder never actually
+    # sets. Every group otherwise defaults to 0 and ties sort unstably, which
+    # reads as a previously-visible group/question randomly disappearing on
+    # reload — see list_section_di_groups' created_at tiebreaker for the same
+    # concern on the read side.
+    max_question_index = await db.scalar(
+        select(func.coalesce(func.max(Question.order_index), -1)).where(
+            Question.section_id == section_id, Question.di_group_id.is_(None)
+        )
+    )
+    max_group_index = await db.scalar(
+        select(func.coalesce(func.max(DIGroup.order_index), -1)).where(
+            DIGroup.section_id == section_id
+        )
+    )
+    next_index = max(max_question_index, max_group_index) + 1
+
     group = DIGroup(
         section_id=section_id,
         title=payload.title,
         passage_md=payload.passage_md,
         image_url=payload.image_url,
-        order_index=payload.order_index,
+        order_index=next_index,
     )
     db.add(group)
     await db.flush()
@@ -900,6 +993,91 @@ async def create_di_group(
         },
     )
     return {"di_group_id": str(group.id), "question_ids": question_ids}
+
+
+@router.post(
+    "/di-groups/{group_id}/questions",
+    response_model=DIGroupAdminOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_di_group_question(
+    group_id: uuid.UUID, payload: DIQuestionCreate, admin: AdminDep, db: DbDep
+) -> DIGroupAdminOut:
+    """Appends one more question to an already-saved DI set. Previously the only
+    tool available for this was the create form, which always created a brand-new
+    group instead of extending the existing one — this is the missing piece that
+    lets an admin add a question to a group after it's been saved."""
+    group = await db.get(DIGroup, group_id)
+    if group is None:
+        log.warning(
+            "di group question add rejected",
+            extra={"di_group_id": str(group_id), "reason": "not_found"},
+        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "DI group not found")
+    section = await _get_section(db, group.section_id)
+    await _assert_editable(db, section.exam_id)
+
+    if len([o for o in payload.options if o.is_correct]) != 1:
+        log.warning(
+            "di group question add rejected",
+            extra={"di_group_id": str(group_id), "reason": "correct_option_count"},
+        )
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Each DI question must have exactly one correct option"
+        )
+
+    next_index = await db.scalar(
+        select(func.coalesce(func.max(Question.order_index), -1)).where(
+            Question.di_group_id == group_id
+        )
+    )
+    question = Question(
+        section_id=group.section_id,
+        di_group_id=group_id,
+        type=QuestionType.di,
+        body_md=payload.body_md,
+        explanation_md=payload.explanation_md,
+        marks=payload.marks,
+        order_index=next_index + 1,
+        meta={"tags": payload.tags, "difficulty": payload.difficulty},
+    )
+    db.add(question)
+    await db.flush()
+    for oidx, option in enumerate(payload.options):
+        db.add(
+            MCQOption(
+                question_id=question.id,
+                body=option.body,
+                is_correct=option.is_correct,
+                order_index=option.order_index or oidx,
+            )
+        )
+    await db.flush()
+    log.info(
+        "di group question added",
+        extra={
+            "di_group_id": str(group_id),
+            "question_id": str(question.id),
+            "section_id": str(section.id),
+            "admin_id": str(admin.id),
+        },
+    )
+
+    result = await db.execute(
+        select(Question)
+        .where(Question.di_group_id == group_id)
+        .options(selectinload(Question.options))
+        .order_by(Question.order_index)
+    )
+    return DIGroupAdminOut(
+        id=group.id,
+        section_id=group.section_id,
+        title=group.title,
+        passage_md=group.passage_md,
+        image_url=group.image_url,
+        order_index=group.order_index,
+        questions=[_question_detail(q) for q in result.scalars()],
+    )
 
 
 @router.post("/uploads/image", status_code=status.HTTP_201_CREATED)
@@ -1783,6 +1961,152 @@ async def create_exam_invites(
     return InviteQueued(queued=len(items))
 
 
+# ------------------------------------------------------- admin management
+# Super-admin-only: see app.deps.current_super_admin. A regular "admin" role
+# can run the rest of this console but must never be able to create, promote,
+# or remove admin accounts — that would let a single compromised admin turn
+# itself into an unbounded number of admins.
+
+SuperAdminDep = Annotated[Admin, Depends(current_super_admin)]
+
+
+async def _get_admin(db: AsyncSession, admin_id: uuid.UUID) -> Admin:
+    target = await db.get(Admin, admin_id)
+    if target is None:
+        log.warning("admin lookup failed", extra={"entity": "admin", "admin_id": str(admin_id)})
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Admin not found")
+    return target
+
+
+async def _count_active_super_admins(db: AsyncSession, exclude_id: uuid.UUID | None = None) -> int:
+    query = select(func.count(Admin.id)).where(
+        Admin.role == "super_admin", Admin.is_active.is_(True)
+    )
+    if exclude_id is not None:
+        query = query.where(Admin.id != exclude_id)
+    return await db.scalar(query) or 0
+
+
+@router.get("/admins", response_model=list[AdminOut])
+async def list_admins(admin: SuperAdminDep, db: DbDep) -> list[AdminOut]:
+    result = await db.execute(select(Admin).order_by(Admin.created_at))
+    return [AdminOut.model_validate(a) for a in result.scalars()]
+
+
+@router.post("/admins", response_model=AdminOut, status_code=status.HTTP_201_CREATED)
+async def create_admin(payload: AdminCreate, admin: SuperAdminDep, db: DbDep) -> AdminOut:
+    new_admin = Admin(
+        email=payload.email.lower(),
+        name=payload.name,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+    )
+    db.add(new_admin)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        log.warning(
+            "admin create conflict",
+            extra={"email_masked": mask_email(payload.email), "error_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Email {payload.email} already exists"
+        ) from None
+    log.info(
+        "admin created",
+        extra={"admin_id": str(new_admin.id), "role": new_admin.role, "created_by": str(admin.id)},
+    )
+    db.add(
+        AuditLog(
+            actor_type="admin",
+            actor_id=admin.id,
+            action="admin_created",
+            target=str(new_admin.id),
+            meta={"role": new_admin.role},
+        )
+    )
+    return AdminOut.model_validate(new_admin)
+
+
+@router.patch("/admins/{admin_id}", response_model=AdminOut)
+async def update_admin(
+    admin_id: uuid.UUID, payload: AdminUpdate, admin: SuperAdminDep, db: DbDep
+) -> AdminOut:
+    target = await _get_admin(db, admin_id)
+    updates = payload.model_dump(exclude_unset=True, exclude={"password"})
+
+    # A super admin demoting/deactivating themselves (or the last other super
+    # admin) is exactly how a console permanently locks everyone out of admin
+    # management — block it rather than trust every caller to remember not to.
+    demoting = updates.get("role") == "admin" and target.role == "super_admin"
+    deactivating = updates.get("is_active") is False and target.is_active
+    if (demoting or deactivating) and await _count_active_super_admins(db, exclude_id=target.id) == 0:
+        log.warning(
+            "admin update rejected",
+            extra={
+                "admin_id": str(admin_id),
+                "reason": "would_remove_last_super_admin",
+                "acting_admin_id": str(admin.id),
+            },
+        )
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "At least one active super admin must remain; promote another admin first",
+        )
+
+    for field, value in updates.items():
+        setattr(target, field, value)
+    if payload.password:
+        target.password_hash = hash_password(payload.password)
+
+    await db.flush()
+    log.info(
+        "admin updated",
+        extra={
+            "admin_id": str(admin_id),
+            "updated_fields": sorted(set(updates) | ({"password"} if payload.password else set())),
+            "acting_admin_id": str(admin.id),
+        },
+    )
+    db.add(
+        AuditLog(
+            actor_type="admin", actor_id=admin.id, action="admin_updated", target=str(admin_id)
+        )
+    )
+    return AdminOut.model_validate(target)
+
+
+@router.delete("/admins/{admin_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_admin(admin_id: uuid.UUID, admin: SuperAdminDep, db: DbDep) -> None:
+    if admin_id == admin.id:
+        log.warning(
+            "admin delete rejected",
+            extra={"admin_id": str(admin_id), "reason": "self_delete"},
+        )
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
+    target = await _get_admin(db, admin_id)
+    if target.role == "super_admin" and await _count_active_super_admins(db, exclude_id=target.id) == 0:
+        log.warning(
+            "admin delete rejected",
+            extra={"admin_id": str(admin_id), "reason": "would_remove_last_super_admin"},
+        )
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "At least one active super admin must remain; promote another admin first",
+        )
+    await db.delete(target)
+    log.info(
+        "admin deleted",
+        extra={"admin_id": str(admin_id), "acting_admin_id": str(admin.id)},
+    )
+    db.add(
+        AuditLog(
+            actor_type="admin", actor_id=admin.id, action="admin_deleted", target=str(admin_id)
+        )
+    )
+
+
 # ----------------------------------------------------------------- publish
 
 
@@ -2223,7 +2547,7 @@ async def analytics(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Analytics
         QuestionStat(
             question_id=qid,
             type=qtype,
-            body_preview=(body or "")[:120],
+            body_preview=_body_preview(body or "", limit=120),
             attempted=attempted,
             correct=correct,
             accuracy=round(correct / attempted * 100, 1) if attempted else 0.0,
@@ -2269,6 +2593,50 @@ def _percentage(attempt: ExamAttempt) -> float | None:
     if attempt.total_score is None or not attempt.max_score:
         return None
     return round(attempt.total_score / attempt.max_score * 100, 2)
+
+
+async def _score_breakdown(
+    db: AsyncSession, attempt_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, float]]:
+    """Splits each attempt's score into aptitude (mcq + DI) vs coding, using the
+    same per-question max-marks fallback (`Question.marks` or else
+    `Section.marks_per_question`) as the single-attempt overview."""
+    breakdown = {
+        attempt_id: {"aptitude_score": 0.0, "aptitude_max": 0.0, "coding_score": 0.0, "coding_max": 0.0}
+        for attempt_id in attempt_ids
+    }
+    if not attempt_ids:
+        return breakdown
+
+    rows_result = await db.execute(
+        select(
+            ExamAttempt.id,
+            Question.type,
+            Answer.score,
+            Question.marks,
+            Section.marks_per_question,
+        )
+        .select_from(ExamAttempt)
+        .join(Section, Section.exam_id == ExamAttempt.exam_id)
+        .join(Question, Question.section_id == Section.id)
+        .outerjoin(
+            Answer, and_(Answer.question_id == Question.id, Answer.attempt_id == ExamAttempt.id)
+        )
+        .where(ExamAttempt.id.in_(attempt_ids))
+    )
+    for attempt_id, qtype, score, marks, marks_per_question in rows_result.all():
+        bucket = breakdown[attempt_id]
+        max_marks = marks if marks is not None else marks_per_question
+        prefix = "coding" if qtype is QuestionType.coding else "aptitude"
+        bucket[f"{prefix}_score"] += score or 0.0
+        bucket[f"{prefix}_max"] += max_marks or 0.0
+
+    for bucket in breakdown.values():
+        bucket["aptitude_score"] = round(bucket["aptitude_score"], 2)
+        bucket["aptitude_max"] = round(bucket["aptitude_max"], 2)
+        bucket["coding_score"] = round(bucket["coding_score"], 2)
+        bucket["coding_max"] = round(bucket["coding_max"], 2)
+    return breakdown
 
 
 AttemptSort = Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"]
@@ -2366,6 +2734,8 @@ async def list_attempts(
     rows_result = await db.execute(
         filtered.order_by(order_expr.nullslast()).limit(page_size).offset((page - 1) * page_size)
     )
+    page_rows = rows_result.all()
+    breakdown = await _score_breakdown(db, [attempt.id for attempt, _, _ in page_rows])
 
     items = [
         AttemptListItem(
@@ -2380,11 +2750,12 @@ async def list_attempts(
             total_score=attempt.total_score,
             max_score=attempt.max_score,
             percentage=_percentage(attempt),
+            **breakdown[attempt.id],
             started_at=attempt.started_at,
             submitted_at=attempt.submitted_at,
             time_taken_minutes=_duration_minutes(attempt),
         )
-        for attempt, student, exam in rows_result.all()
+        for attempt, student, exam in page_rows
     ]
 
     return AttemptListPage(items=items, total=total, page=page, page_size=page_size)

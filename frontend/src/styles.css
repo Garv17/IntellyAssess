@@ -502,6 +502,15 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
 }
 .chip:hover { border-color: var(--primary); color: var(--primary); }
 .chip.active { background: var(--gray-900); border-color: var(--gray-900); color: #fff; }
+.chip-with-actions { display: flex; align-items: center; gap: 0.15rem; }
+.chip-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6rem; height: 1.6rem; border: none; background: transparent;
+  color: var(--muted); border-radius: var(--radius-full); cursor: pointer;
+  transition: all 0.12s var(--ease);
+}
+.chip-action:hover { background: var(--gray-100); color: var(--text); }
+.chip-action.danger:hover { background: var(--red-100); color: var(--danger); }
 
 .search-box {
   display: flex; align-items: center; gap: 0.4rem; padding: 0.38rem 0.7rem;
@@ -693,6 +702,7 @@ input:disabled, select:disabled, textarea:disabled { background: var(--gray-100)
   transition: background 0.2s var(--ease);
 }
 .exam-bar > div:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.exam-bar-student { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.85rem; font-weight: 600; }
 .exam-bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; flex-shrink: 0; }
 .exam-progress { padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .exam-progress .progress-track { margin: 0.55rem 0; }
