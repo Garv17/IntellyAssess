@@ -14,7 +14,6 @@ Nothing here writes to the database — see app/tasks/ai_tasks.py for that.
 from __future__ import annotations
 
 import json
-import logging
 import re
 import time
 from dataclasses import dataclass
@@ -24,9 +23,10 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
+from app.logging_config import get_logger
 from app.services.rubric import BACKEND_ROOT, Criterion, Rubric, get_rubric
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # The model sees at most this much of the submission. Well above any real answer;
 # it exists so a pathological paste can't blow up the request or the bill.
@@ -86,6 +86,16 @@ def _system_prompt() -> str:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
+        # Same class of deploy fault as a missing rubric: lru_cached, so every
+        # evaluation on this worker fails identically until the file exists.
+        # Only the path is logged — the prompt body itself is never logged.
+        log.error(
+            "evaluator prompt file missing",
+            extra={
+                "prompt_path": str(path),
+                "configured": settings.coding_evaluator_prompt_path,
+            },
+        )
         raise AIEvaluationError(f"Evaluator prompt not found at {path}") from exc
 
 
@@ -400,8 +410,12 @@ def _validate(payload: dict, rubric: Rubric) -> Evaluation:
 
     if total_disagreed:
         log.warning(
-            "model reported %s but its rubric scores sum to %g; using the sum",
-            reported, total,
+            "model total disagrees with its own rubric breakdown; using the sum",
+            extra={
+                "reported_score": float(reported),
+                "computed_score": total,
+                "model": settings.openai_model,
+            },
         )
         requires_review = True
 
@@ -443,8 +457,12 @@ def evaluate(
 ) -> Evaluation:
     """Synchronous by design — this is called from a Celery worker thread."""
     if not settings.ai_evaluation_enabled:
+        log.info("evaluation skipped", extra={"reason": "ai_evaluation_disabled"})
         raise AIEvaluationError("AI evaluation is disabled (AI_EVALUATION_ENABLED=false)")
     if not settings.openai_api_key:
+        # The key's absence is the fact worth recording; the key itself, and
+        # anything derived from it, is never logged anywhere in this module.
+        log.error("evaluation skipped", extra={"reason": "openai_key_not_configured"})
         raise AIEvaluationError("OPENAI_API_KEY is not configured")
 
     rubric = rubric or get_rubric()
@@ -485,6 +503,22 @@ def evaluate(
     # slips a resample usually gets right, and every one we don't recover costs an
     # examiner a manual grade. Transport failures are deliberately not retried
     # here: that is the Celery layer's call, not this function's.
+    # The submission being graded is identified by the correlation ID the Celery
+    # signal already bound (the task ID), so nothing here needs to carry it. What
+    # is deliberately absent: the API key, the prompt, and the student's code —
+    # only its length, which is what explains a slow or truncated call.
+    log.info(
+        "ai evaluation started",
+        extra={
+            "model": settings.openai_model,
+            "language": language,
+            "code_chars": len(code_text),
+            "rubric_version": rubric.version,
+            "max_marks": rubric.max_marks,
+        },
+    )
+    started = time.monotonic()
+
     last_error: AIEvaluationError | None = None
     for attempt in range(2):
         body["temperature"] = 0 if attempt == 0 else RETRY_TEMPERATURE
@@ -497,23 +531,61 @@ def evaluate(
             # manual re-run. A long wait means a daily quota, which no amount of
             # sleeping in a worker will fix — that goes back as a failure now.
             if attempt == 0 and exc.retry_after and exc.retry_after <= MAX_INLINE_RETRY_WAIT:
-                log.warning("rate limited; waiting %.1fs before retry", exc.retry_after)
+                log.warning(
+                    "rate limited; waiting before retry",
+                    extra={"retry_after_s": exc.retry_after, "model": settings.openai_model},
+                )
                 time.sleep(exc.retry_after)
                 continue
+            log.warning(
+                "ai evaluation rate limited, giving up",
+                extra={
+                    "retry_after_s": exc.retry_after,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
             raise
         try:
-            return _validate(payload, rubric)
+            evaluation = _validate(payload, rubric)
         except AIEvaluationError as exc:
             last_error = exc
-            log.warning("evaluation attempt %d rejected by validation: %s", attempt + 1, exc)
+            # `exc` carries only structural complaints about the model's JSON
+            # (missing key, score over cap) — never the response body itself.
+            log.warning(
+                "evaluation rejected by validation",
+                extra={"attempt": attempt + 1, "error": str(exc)},
+            )
+        else:
+            log.info(
+                "ai evaluation succeeded",
+                extra={
+                    "model": evaluation.model,
+                    "attempt": attempt + 1,
+                    "score": evaluation.recommended_score,
+                    "max_score": evaluation.max_score,
+                    "confidence": evaluation.confidence,
+                    "requires_manual_review": evaluation.requires_manual_review,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
+            return evaluation
 
     assert last_error is not None
+    log.warning(
+        "ai evaluation failed after retry",
+        extra={
+            "model": settings.openai_model,
+            "error": str(last_error),
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
     raise last_error
 
 
 def _request(body: dict) -> dict:
     """One round trip. Raises AIEvaluationError for anything that isn't a JSON
     object we can hand to `_validate`."""
+    started = time.monotonic()
     try:
         response = httpx.post(
             f"{settings.openai_base_url.rstrip('/')}/chat/completions",
@@ -525,10 +597,29 @@ def _request(body: dict) -> dict:
             timeout=settings.openai_timeout_seconds,
         )
     except httpx.HTTPError as exc:
+        # Transport, not content: DNS, TLS, connect or read timeout. The URL is
+        # logged but never the Authorization header it was sent with.
+        log.warning(
+            "evaluation request transport error",
+            extra={
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "timeout_s": settings.openai_timeout_seconds,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            },
+        )
         raise AIEvaluationError(f"Could not reach the evaluation model: {exc}") from exc
+
+    duration_ms = round((time.monotonic() - started) * 1000)
 
     if response.status_code == 429:
         if _is_out_of_credit(response):
+            # Distinct from a burst limit and not retryable — this one needs a
+            # human to top up billing, so it is logged at ERROR, not WARNING.
+            log.error(
+                "evaluation provider out of credit",
+                extra={"status": 429, "duration_ms": duration_ms},
+            )
             raise AIEvaluationError(
                 "The evaluation account is out of credit — top up the OpenAI billing "
                 f"account and re-run the evaluation. {response.text[:200]}"
@@ -536,29 +627,73 @@ def _request(body: dict) -> dict:
         raise RateLimitedError(_retry_after(response), response.text[:300])
 
     if response.status_code != 200:
+        # Status only. The body is already truncated into the exception (and from
+        # there onto the submission row for the examiner); repeating it in the log
+        # adds nothing and risks echoing back part of the request.
+        log.warning(
+            "evaluation provider returned an error status",
+            extra={"status": response.status_code, "duration_ms": duration_ms},
+        )
         # Truncated: the body can be long, and it is stored on the submission row.
         raise AIEvaluationError(f"Model returned HTTP {response.status_code}: {response.text[:300]}")
 
     try:
-        choice = response.json()["choices"][0]
+        envelope = response.json()
+        choice = envelope["choices"][0]
     except (KeyError, IndexError, ValueError) as exc:
+        log.warning(
+            "malformed evaluation response envelope",
+            extra={"error_type": type(exc).__name__, "duration_ms": duration_ms},
+        )
         raise AIEvaluationError("Malformed response envelope from the model") from exc
+
+    # Token counts are the cost signal for this feature; `usage` is absent on some
+    # OpenAI-compatible providers, hence the defensive get.
+    usage = envelope.get("usage") or {}
+    log.info(
+        "evaluation provider responded",
+        extra={
+            "status": response.status_code,
+            "duration_ms": duration_ms,
+            "finish_reason": choice.get("finish_reason"),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        },
+    )
 
     message = choice.get("message") or {}
     if message.get("refusal"):
+        # The refusal text is the model's, about the submission — not logged.
+        log.warning("model refused to evaluate", extra={"duration_ms": duration_ms})
         raise AIEvaluationError(f"Model refused to evaluate: {message['refusal'][:200]}")
     if choice.get("finish_reason") == "length":
+        # Almost always OPENAI_MAX_OUTPUT_TOKENS set too low for the rubric size.
+        log.warning(
+            "evaluation response truncated by output limit",
+            extra={"max_output_tokens": settings.openai_max_output_tokens},
+        )
         raise AIEvaluationError("Model response was truncated before the evaluation was complete")
 
     content = message.get("content")
     if not content:
+        log.warning("model returned an empty response", extra={"duration_ms": duration_ms})
         raise AIEvaluationError("Model returned an empty response")
 
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as exc:
+        # The content is the model's grade text; only the parse position is logged.
+        log.warning(
+            "evaluation response was not valid json",
+            extra={"error_pos": exc.pos, "content_chars": len(content)},
+        )
         raise AIEvaluationError("Model response was not valid JSON") from exc
     if not isinstance(payload, dict):
+        log.warning(
+            "evaluation response was not a json object",
+            extra={"payload_type": type(payload).__name__},
+        )
         raise AIEvaluationError("Model response was not a JSON object")
 
     return payload

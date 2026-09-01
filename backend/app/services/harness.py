@@ -8,11 +8,14 @@ this branch; only `boilerplate()` is called, from the admin exam builder.
 
 from __future__ import annotations
 
+from app.logging_config import get_logger
 from app.services.harness_langs import c as _c
 from app.services.harness_langs import cpp as _cpp
 from app.services.harness_langs import java as _java
 from app.services.harness_langs import javascript as _javascript
 from app.services.harness_langs import python as _python
+
+log = get_logger(__name__)
 
 # The closed set of parameter/return types a function-signature question may use.
 # Adding a type means adding one entry here plus its rendering in every
@@ -48,6 +51,14 @@ def _lang_module(language: str):
     try:
         return _LANG_MODULES[language]
     except KeyError:
+        # The ValueError surfaces to the admin as a 4xx, so this is normally an
+        # author picking an unsupported language — but it is also how a
+        # half-finished language rollout (module added to the exam builder's
+        # dropdown, not to _LANG_MODULES) shows up, which the list makes obvious.
+        log.warning(
+            "unsupported function-signature language",
+            extra={"language": language, "supported": sorted(SUPPORTED_FUNCTION_LANGUAGES)},
+        )
         raise ValueError(f"Function-signature mode does not support language: {language}") from None
 
 

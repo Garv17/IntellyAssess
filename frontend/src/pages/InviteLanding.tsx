@@ -2,6 +2,7 @@ import { AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, type InviteRedeem } from '../api';
+import { errorContext, log } from '../logger';
 
 export default function InviteLanding() {
   const [params] = useSearchParams();
@@ -18,6 +19,10 @@ export default function InviteLanding() {
       .redeemInvite(token)
       .then(setInvite)
       .catch((err) => {
+        // The invite token is a credential — only its length is recorded, which
+        // is enough to tell "truncated by an email client" from "expired". The
+        // key deliberately avoids the word "token", which the logger redacts.
+        log.warn('invite redeem failed', { link_chars: token.length, ...errorContext(err) });
         setError(
           err instanceof Error ? err.message : 'This invite link is invalid or has expired.',
         );

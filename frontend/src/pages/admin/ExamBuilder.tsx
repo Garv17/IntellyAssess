@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api, type PublishResult, type Section } from '../../api';
 import AppShell from '../../components/AppShell';
 import { useToast } from '../../components/Toast';
+import { errorContext, log } from '../../logger';
 import BulkForm from './exam-builder/BulkForm';
 import CodingForm from './exam-builder/CodingForm';
 import DiForm from './exam-builder/DiForm';
@@ -36,7 +37,10 @@ export default function ExamBuilder() {
   };
 
   useEffect(() => {
-    void load().catch((err) => setError(err.message));
+    void load().catch((err) => {
+      log.warn('exam builder sections failed to load', { exam_id: examId, ...errorContext(err) });
+      setError(err.message);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
 
@@ -70,6 +74,13 @@ export default function ExamBuilder() {
     } catch (err) {
       const payload = (err as { payload?: { detail?: { problems?: string[] } } }).payload;
       const list = payload?.detail?.problems;
+      // A rejected publish is a content problem, not a fault — but a publish
+      // that fails for any *other* reason on exam morning is worth finding.
+      log.warn('exam publish failed', {
+        exam_id: examId,
+        problem_count: list?.length ?? 0,
+        ...errorContext(err),
+      });
       if (list) setProblems(list);
       else setError(err instanceof Error ? err.message : 'Publish failed');
     } finally {

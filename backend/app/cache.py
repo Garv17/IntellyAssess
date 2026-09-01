@@ -7,14 +7,14 @@ going down must slow the exam, not stop it.
 from __future__ import annotations
 
 import json
-import logging
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
 from app.config import settings
+from app.logging_config import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 _pool: aioredis.Redis | None = None
 

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.logging_config import get_logger
 from app.models import (
     Answer,
     ExamAttempt,
@@ -18,6 +19,8 @@ from app.models import (
     QuestionType,
     Section,
 )
+
+log = get_logger(__name__)
 
 
 async def grade_objective(db: AsyncSession, attempt: ExamAttempt) -> tuple[float, float, bool]:
@@ -36,6 +39,9 @@ async def grade_objective(db: AsyncSession, attempt: ExamAttempt) -> tuple[float
     total = 0.0
     max_score = 0.0
     coding_pending = False
+    # Log-only counter. Grading is per-submission and a per-question line would
+    # be thousands of lines a cohort, so the loop aggregates and logs once below.
+    objective_graded = 0
 
     for question in questions:
         marks = question.marks if question.marks is not None else question.section.marks_per_question
@@ -69,7 +75,21 @@ async def grade_objective(db: AsyncSession, attempt: ExamAttempt) -> tuple[float
         answer.is_correct = is_correct
         answer.score = marks if is_correct else -negative
         total += answer.score
+        objective_graded += 1
 
+    log.info(
+        "objective grading complete",
+        extra={
+            "attempt_id": str(attempt.id),
+            "exam_id": str(attempt.exam_id),
+            "questions_total": len(questions),
+            "answers_saved": len(answers),
+            "questions_graded": objective_graded,
+            "score": total,
+            "max_score": max_score,
+            "coding_pending": coding_pending,
+        },
+    )
     return total, max_score, coding_pending
 
 

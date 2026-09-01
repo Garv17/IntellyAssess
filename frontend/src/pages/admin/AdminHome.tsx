@@ -33,6 +33,7 @@ import DropdownMenu, { DropdownItem, DropdownSeparator } from '../../components/
 import EmptyState from '../../components/EmptyState';
 import { SkeletonStatRow, SkeletonTable } from '../../components/Skeleton';
 import { useToast } from '../../components/Toast';
+import { errorContext, log } from '../../logger';
 
 export default function AdminHome() {
   const navigate = useNavigate();
@@ -98,6 +99,7 @@ export default function AdminHome() {
         navigate('/admin/login', { replace: true });
         return;
       }
+      log.warn('admin home load failed', errorContext(err));
       setError(err instanceof Error ? err.message : 'Could not load exams');
     } finally {
       setLoading(false);
@@ -227,6 +229,9 @@ export default function AdminHome() {
       await load();
       toast.success('Exam deleted');
     } catch (err) {
+      // Destructive and irreversible — worth a durable record of the attempt
+      // and its target, which the toast alone doesn't leave behind.
+      log.warn('exam delete failed', { exam_id: deletingExam.id, ...errorContext(err) });
       toast.error(err instanceof Error ? err.message : 'Could not delete the exam');
     } finally {
       setDeletingExamBusy(false);
@@ -272,6 +277,7 @@ export default function AdminHome() {
       await loadStudents(studentCohortFilter);
       toast.success('Student deleted');
     } catch (err) {
+      log.warn('student delete failed', { student_id: deletingStudent.id, ...errorContext(err) });
       toast.error(err instanceof Error ? err.message : 'Could not delete the student');
     } finally {
       setDeletingStudentBusy(false);

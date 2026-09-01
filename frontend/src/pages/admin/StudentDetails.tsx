@@ -7,6 +7,7 @@ import { Identity } from '../../components/Avatar';
 import { ScoreBadge } from '../../components/Badge';
 import EmptyState from '../../components/EmptyState';
 import { SkeletonTable } from '../../components/Skeleton';
+import { errorContext, log } from '../../logger';
 
 type SortKey = 'student_name' | 'exam_title' | 'score' | 'percentage' | 'started_at' | 'submitted_at';
 
@@ -51,7 +52,12 @@ export default function StudentDetails() {
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    void api.adminExams().then(setExams).catch(() => undefined);
+    // Only feeds the exam filter dropdown, so a failure is non-blocking — but
+    // it leaves the filter silently empty, which reads as "there are no exams".
+    void api
+      .adminExams()
+      .then(setExams)
+      .catch((err) => log.warn('exam filter options failed to load', errorContext(err)));
   }, []);
 
   useEffect(() => {

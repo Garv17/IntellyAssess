@@ -4,7 +4,6 @@ import asyncio
 import csv
 import hashlib
 import io
-import logging
 import secrets
 import statistics
 import uuid
@@ -35,6 +34,7 @@ from app import cache
 from app.config import settings
 from app.db import get_db
 from app.deps import current_admin
+from app.logging_config import get_logger, mask_email
 from app.security import decode_token
 from app.services.monitor import build_live_snapshot
 from app.ws_manager import live_connections
@@ -120,7 +120,7 @@ from app.services.rubric import get_rubric
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 AdminDep = Annotated[Admin, Depends(current_admin)]
 DbDep = Annotated[AsyncSession, Depends(get_db)]
@@ -129,6 +129,10 @@ DbDep = Annotated[AsyncSession, Depends(get_db)]
 async def _get_exam(db: AsyncSession, exam_id: uuid.UUID) -> Exam:
     exam = await db.get(Exam, exam_id)
     if exam is None:
+        # Logged in the lookup helper rather than at each call site: this is the
+        # single place a missing exam turns into a 404, and every mutating
+        # endpoint below funnels through it.
+        log.warning("admin lookup failed", extra={"entity": "exam", "exam_id": str(exam_id)})
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found")
     return exam
 
@@ -136,6 +140,9 @@ async def _get_exam(db: AsyncSession, exam_id: uuid.UUID) -> Exam:
 async def _get_section(db: AsyncSession, section_id: uuid.UUID) -> Section:
     section = await db.get(Section, section_id)
     if section is None:
+        log.warning(
+            "admin lookup failed", extra={"entity": "section", "section_id": str(section_id)}
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found")
     return section
 
@@ -149,6 +156,14 @@ async def _assert_editable(db: AsyncSession, exam_id: uuid.UUID) -> Exam:
             select(func.count(ExamAttempt.id)).where(ExamAttempt.exam_id == exam_id)
         )
         if in_progress:
+            log.warning(
+                "content edit blocked",
+                extra={
+                    "exam_id": str(exam_id),
+                    "reason": "exam_published_with_attempts",
+                    "attempt_count": in_progress,
+                },
+            )
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Students have already started this exam; unpublish is not possible",
@@ -198,6 +213,12 @@ async def create_exam(payload: ExamCreate, admin: AdminDep, db: DbDep) -> ExamOu
     exam = Exam(**payload.model_dump(), created_by=admin.id)
     db.add(exam)
     await db.flush()
+    # Exam CRUD writes no AuditLog row, so this line is the only trace that the
+    # paper came into existence and who made it.
+    log.info(
+        "exam created",
+        extra={"exam_id": str(exam.id), "admin_id": str(admin.id), "cohort": exam.cohort},
+    )
     return ExamOut.model_validate(exam)
 
 
@@ -217,9 +238,20 @@ async def update_exam(
     exam_id: uuid.UUID, payload: ExamCreate, admin: AdminDep, db: DbDep
 ) -> ExamOut:
     exam = await _assert_editable(db, exam_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(exam, field, value)
     await db.flush()
+    # Only the names of the changed fields: the values can include the SEB Config
+    # Key, which must never reach a log sink.
+    log.info(
+        "exam updated",
+        extra={
+            "exam_id": str(exam_id),
+            "admin_id": str(admin.id),
+            "updated_fields": sorted(updates),
+        },
+    )
     return ExamOut.model_validate(exam)
 
 
@@ -230,10 +262,27 @@ async def delete_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> None:
         select(func.count(ExamAttempt.id)).where(ExamAttempt.exam_id == exam_id)
     )
     if attempts:
+        log.warning(
+            "exam delete blocked",
+            extra={"exam_id": str(exam_id), "reason": "has_attempts", "attempt_count": attempts},
+        )
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Exam has attempts and cannot be deleted; close it instead"
         )
+    # Read the status before the delete: the instance is expired once the unit of
+    # work flushes, and touching it afterwards would emit a lazy refresh.
+    previous_status = exam.status.value
     await db.delete(exam)
+    # Destructive and unaudited — the cascade takes every section, question and
+    # option with it, so this line is the only record the paper ever existed.
+    log.info(
+        "exam deleted",
+        extra={
+            "exam_id": str(exam_id),
+            "admin_id": str(admin.id),
+            "previous_status": previous_status,
+        },
+    )
 
 
 # ---------------------------------------------------------------- sections
@@ -249,6 +298,14 @@ async def create_section(
     section = Section(exam_id=exam_id, **payload.model_dump())
     db.add(section)
     await db.flush()
+    log.info(
+        "section created",
+        extra={
+            "exam_id": str(exam_id),
+            "section_id": str(section.id),
+            "admin_id": str(admin.id),
+        },
+    )
     return SectionAdminOut.model_validate(section)
 
 
@@ -341,6 +398,9 @@ async def _get_question_detailed(db: AsyncSession, question_id: uuid.UUID) -> Qu
     )
     question = result.scalar_one_or_none()
     if question is None:
+        log.warning(
+            "admin lookup failed", extra={"entity": "question", "question_id": str(question_id)}
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found")
     return question
 
@@ -427,6 +487,15 @@ async def reorder_section(
             parts.append("missing " + ", ".join(f"{k}:{i}" for k, i in sorted(missing, key=str)))
         if extra:
             parts.append("unknown " + ", ".join(f"{k}:{i}" for k, i in sorted(extra, key=str)))
+        log.warning(
+            "section reorder rejected",
+            extra={
+                "section_id": str(section_id),
+                "reason": "not_a_permutation",
+                "missing_count": len(missing),
+                "unknown_count": len(extra),
+            },
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Reorder payload must be exactly a permutation of this section's questions "
@@ -446,6 +515,15 @@ async def reorder_section(
                 idx += 1
 
     await db.flush()
+    log.info(
+        "section reordered",
+        extra={
+            "section_id": str(section_id),
+            "exam_id": str(section.exam_id),
+            "admin_id": str(admin.id),
+            "item_count": len(payload.items),
+        },
+    )
     return {"status": "ok"}
 
 
@@ -520,6 +598,10 @@ async def copy_question(
     out of scope here."""
     question = await _get_question_detailed(db, question_id)
     if question.di_group_id is not None:
+        log.warning(
+            "question copy refused",
+            extra={"question_id": str(question_id), "reason": "belongs_to_di_group"},
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Cannot copy a question that belongs to a DI set directly — copy the whole "
@@ -593,6 +675,16 @@ async def copy_question(
             )
 
     await db.flush()
+    log.info(
+        "question copied",
+        extra={
+            "source_question_id": str(question_id),
+            "question_id": str(new_question.id),
+            "target_section_id": str(target_section.id),
+            "question_type": question.type.value,
+            "admin_id": str(admin.id),
+        },
+    )
     out = QuestionAdminOut.model_validate(new_question)
     out.tags = new_question.meta.get("tags", []) if new_question.meta else []
     out.difficulty = (new_question.meta or {}).get("difficulty")
@@ -612,6 +704,14 @@ async def create_mcq(
 
     correct = [o for o in payload.options if o.is_correct]
     if len(correct) != 1:
+        log.warning(
+            "mcq create rejected",
+            extra={
+                "section_id": str(section_id),
+                "reason": "correct_option_count",
+                "correct_count": len(correct),
+            },
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "An MCQ must have exactly one correct option"
         )
@@ -638,6 +738,18 @@ async def create_mcq(
             )
         )
     await db.flush()
+    # Question bodies and option text are exam content and never logged; the ids
+    # are enough to find the row.
+    log.info(
+        "question created",
+        extra={
+            "question_id": str(question.id),
+            "section_id": str(section_id),
+            "question_type": QuestionType.mcq.value,
+            "option_count": len(payload.options),
+            "admin_id": str(admin.id),
+        },
+    )
     out = QuestionAdminOut.model_validate(question)
     out.tags = payload.tags
     out.difficulty = payload.difficulty
@@ -710,6 +822,16 @@ async def bulk_upload_mcq(
         created += 1
 
     await db.flush()
+    # Row-level error text quotes CSV content, so only the counts are logged.
+    log.info(
+        "mcq bulk upload completed",
+        extra={
+            "section_id": str(section_id),
+            "created": created,
+            "skipped": skipped,
+            "admin_id": str(admin.id),
+        },
+    )
     return BulkResult(created=created, skipped=skipped, errors=errors[:50])
 
 
@@ -724,6 +846,10 @@ async def create_di_group(
 
     for q in payload.questions:
         if len([o for o in q.options if o.is_correct]) != 1:
+            log.warning(
+                "di group create rejected",
+                extra={"section_id": str(section_id), "reason": "correct_option_count"},
+            )
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "Each DI question must have exactly one correct option",
@@ -764,6 +890,15 @@ async def create_di_group(
             )
         question_ids.append(str(question.id))
 
+    log.info(
+        "di group created",
+        extra={
+            "di_group_id": str(group.id),
+            "section_id": str(section_id),
+            "question_count": len(question_ids),
+            "admin_id": str(admin.id),
+        },
+    )
     return {"di_group_id": str(group.id), "question_ids": question_ids}
 
 
@@ -776,11 +911,19 @@ async def upload_image(
     """Stores a DI image and returns the URL to put on the DI group."""
     allowed = {"image/png", "image/jpeg", "image/webp", "image/gif"}
     if file.content_type not in allowed:
+        log.warning(
+            "image upload rejected",
+            extra={"reason": "unsupported_media_type", "content_type": file.content_type},
+        )
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Allowed types: {', '.join(sorted(allowed))}"
         )
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
+        log.warning(
+            "image upload rejected",
+            extra={"reason": "too_large", "size_bytes": len(data)},
+        )
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             f"Image exceeds {settings.max_upload_mb} MB",
@@ -791,6 +934,10 @@ async def upload_image(
     target_dir = Path(settings.upload_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / name).write_bytes(data)
+    log.info(
+        "image uploaded",
+        extra={"stored_name": name, "size_bytes": len(data), "admin_id": str(admin.id)},
+    )
     return {"image_url": f"/uploads/{name}", "filename": name}
 
 
@@ -808,9 +955,17 @@ async def upload_seb_config(
     since the Config Key has to be copied from the Config Tool by hand regardless."""
     await _get_exam(db, exam_id)
     if not (file.filename or "").lower().endswith(".seb"):
+        log.warning(
+            "seb config upload rejected",
+            extra={"exam_id": str(exam_id), "reason": "not_a_seb_file"},
+        )
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Expected a .seb file")
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
+        log.warning(
+            "seb config upload rejected",
+            extra={"exam_id": str(exam_id), "reason": "too_large", "size_bytes": len(data)},
+        )
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             f"File exceeds {settings.max_upload_mb} MB",
@@ -819,6 +974,12 @@ async def upload_seb_config(
     target_dir = Path(settings.upload_dir) / "seb"
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / f"{exam_id}.seb").write_bytes(data)
+    # The .seb payload itself carries the exam's lockdown settings; only its size
+    # is recorded, never its contents.
+    log.info(
+        "seb config uploaded",
+        extra={"exam_id": str(exam_id), "size_bytes": len(data), "admin_id": str(admin.id)},
+    )
     return {"seb_url": f"/uploads/seb/{exam_id}.seb"}
 
 
@@ -827,8 +988,15 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
     and update. For problem_type="function", starter_code is always derived from
     the signature here — never taken from the client — so the boilerplate a
     student sees can never drift from what the generated driver actually expects."""
+    # No id is available here — the caller is validating a payload before any row
+    # exists — so these lines carry the reason only; the request id correlates
+    # them with the endpoint's own access-log entry.
     if "sql" in payload.allowed_languages:
         if not (payload.sql_schema_sql or "").strip():
+            log.warning(
+                "coding payload rejected",
+                extra={"reason": "sql_schema_missing"},
+            )
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "SQL questions need a schema/seed data script",
@@ -843,6 +1011,9 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
 
     if payload.problem_type == "function":
         if not payload.function_name or not payload.return_type or not payload.parameters:
+            log.warning(
+                "coding payload rejected", extra={"reason": "incomplete_function_signature"}
+            )
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "Function-signature problems require a function name, return type, "
@@ -850,6 +1021,13 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
             )
         unsupported = set(payload.allowed_languages) - harness.SUPPORTED_FUNCTION_LANGUAGES
         if unsupported:
+            log.warning(
+                "coding payload rejected",
+                extra={
+                    "reason": "unsupported_function_languages",
+                    "languages": sorted(unsupported),
+                },
+            )
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"Function-signature mode doesn't support: {', '.join(sorted(unsupported))}. "
@@ -858,11 +1036,21 @@ def _prepare_coding_fields(payload: CodingCreate | CodingUpdate) -> dict:
         parameters = [p.model_dump() for p in payload.parameters]
         for tc in payload.test_cases:
             if tc.param_values is None or len(tc.param_values) != len(parameters):
+                log.warning(
+                    "coding payload rejected",
+                    extra={
+                        "reason": "test_case_param_arity",
+                        "expected_params": len(parameters),
+                    },
+                )
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
                     f"Every test case needs exactly {len(parameters)} parameter value(s)",
                 )
             if tc.expected_value is None:
+                log.warning(
+                    "coding payload rejected", extra={"reason": "test_case_expected_missing"}
+                )
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST, "Every test case needs an expected output"
                 )
@@ -896,6 +1084,10 @@ async def preview_boilerplate(payload: BoilerplatePreviewRequest, admin: AdminDe
     """No DB writes — lets the exam builder show exactly what students will see
     while the admin is still editing the function signature."""
     if payload.language not in harness.SUPPORTED_FUNCTION_LANGUAGES:
+        log.warning(
+            "boilerplate preview rejected",
+            extra={"reason": "unsupported_language", "language": payload.language},
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"Function-signature mode doesn't support: {payload.language}",
@@ -925,6 +1117,10 @@ async def create_coding_problem(
     # optional: nothing executes them, they only give the AI evaluator extra
     # context about the intended behaviour.
     if not any(tc.is_sample for tc in payload.test_cases):
+        log.warning(
+            "coding question create rejected",
+            extra={"section_id": str(section_id), "reason": "no_sample_test_case"},
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Provide at least one sample test case to show students as a worked example",
@@ -969,6 +1165,18 @@ async def create_coding_problem(
             )
         )
     await db.flush()
+    log.info(
+        "question created",
+        extra={
+            "question_id": str(question.id),
+            "section_id": str(section_id),
+            "question_type": QuestionType.coding.value,
+            "coding_problem_id": str(problem.id),
+            "problem_type": str(coding_fields["problem_type"]),
+            "test_case_count": len(payload.test_cases),
+            "admin_id": str(admin.id),
+        },
+    )
     return {"question_id": str(question.id), "coding_problem_id": str(problem.id)}
 
 
@@ -981,12 +1189,27 @@ async def update_mcq(
     they're created."""
     question = await db.get(Question, question_id)
     if question is None or question.type not in (QuestionType.mcq, QuestionType.di):
+        log.warning(
+            "mcq update rejected",
+            extra={
+                "question_id": str(question_id),
+                "reason": "not_found" if question is None else "wrong_question_type",
+            },
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "MCQ/DI question not found")
     section = await _get_section(db, question.section_id)
     await _assert_editable(db, section.exam_id)
 
     correct = [o for o in payload.options if o.is_correct]
     if len(correct) != 1:
+        log.warning(
+            "mcq update rejected",
+            extra={
+                "question_id": str(question_id),
+                "reason": "correct_option_count",
+                "correct_count": len(correct),
+            },
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "An MCQ must have exactly one correct option"
         )
@@ -1008,6 +1231,18 @@ async def update_mcq(
             )
         )
     await db.flush()
+    # Options are replaced wholesale, so this is a destructive edit of graded
+    # content — worth a trace even though nothing writes an AuditLog row.
+    log.info(
+        "question updated",
+        extra={
+            "question_id": str(question_id),
+            "section_id": str(question.section_id),
+            "question_type": question.type.value,
+            "option_count": len(payload.options),
+            "admin_id": str(admin.id),
+        },
+    )
     return _question_detail(await _get_question_detailed(db, question.id))
 
 
@@ -1017,6 +1252,13 @@ async def update_coding(
 ) -> QuestionDetailOut:
     question = await db.get(Question, question_id)
     if question is None or question.type is not QuestionType.coding:
+        log.warning(
+            "coding question update rejected",
+            extra={
+                "question_id": str(question_id),
+                "reason": "not_found" if question is None else "wrong_question_type",
+            },
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding question not found")
     section = await _get_section(db, question.section_id)
     await _assert_editable(db, section.exam_id)
@@ -1025,12 +1267,22 @@ async def update_coding(
         select(CodingProblem).where(CodingProblem.question_id == question.id)
     )
     if problem is None:
+        # A coding question whose problem row is missing is a broken row, not a
+        # bad request — the create path always writes the two together.
+        log.error(
+            "coding question has no problem row",
+            extra={"question_id": str(question_id), "section_id": str(question.section_id)},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding problem not found")
 
     # Sample cases are the worked examples a student sees. Hidden cases are now
     # optional: nothing executes them, they only give the AI evaluator extra
     # context about the intended behaviour.
     if not any(tc.is_sample for tc in payload.test_cases):
+        log.warning(
+            "coding question update rejected",
+            extra={"question_id": str(question_id), "reason": "no_sample_test_case"},
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Provide at least one sample test case to show students as a worked example",
@@ -1065,6 +1317,17 @@ async def update_coding(
             )
         )
     await db.flush()
+    log.info(
+        "question updated",
+        extra={
+            "question_id": str(question_id),
+            "section_id": str(question.section_id),
+            "question_type": QuestionType.coding.value,
+            "coding_problem_id": str(problem.id),
+            "test_case_count": len(payload.test_cases),
+            "admin_id": str(admin.id),
+        },
+    )
     return _question_detail(await _get_question_detailed(db, question.id))
 
 
@@ -1076,6 +1339,10 @@ async def update_di_group(
     individually via PATCH /questions/{id}/mcq, same as any other MCQ-shaped question."""
     group = await db.get(DIGroup, group_id)
     if group is None:
+        log.warning(
+            "di group update rejected",
+            extra={"di_group_id": str(group_id), "reason": "not_found"},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "DI group not found")
     section = await _get_section(db, group.section_id)
     await _assert_editable(db, section.exam_id)
@@ -1084,6 +1351,14 @@ async def update_di_group(
     group.passage_md = payload.passage_md
     group.image_url = payload.image_url
     await db.flush()
+    log.info(
+        "di group updated",
+        extra={
+            "di_group_id": str(group_id),
+            "section_id": str(group.section_id),
+            "admin_id": str(admin.id),
+        },
+    )
 
     result = await db.execute(
         select(Question)
@@ -1107,25 +1382,56 @@ async def delete_di_group(group_id: uuid.UUID, admin: AdminDep, db: DbDep) -> No
     """Deletes the stimulus and every question grouped under it."""
     group = await db.get(DIGroup, group_id)
     if group is None:
+        log.warning(
+            "di group delete rejected",
+            extra={"di_group_id": str(group_id), "reason": "not_found"},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "DI group not found")
     section = await _get_section(db, group.section_id)
     await _assert_editable(db, section.exam_id)
 
     children = await db.execute(select(Question).where(Question.di_group_id == group_id))
+    deleted_children = 0
     for child in children.scalars():
         await db.delete(child)
+        deleted_children += 1
     await db.flush()
     await db.delete(group)
+    # Cascading delete of a whole DI set, with no audit row behind it.
+    log.info(
+        "di group deleted",
+        extra={
+            "di_group_id": str(group_id),
+            "section_id": str(section.id),
+            "question_count": deleted_children,
+            "admin_id": str(admin.id),
+        },
+    )
 
 
 @router.delete("/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_question(question_id: uuid.UUID, admin: AdminDep, db: DbDep) -> None:
     question = await db.get(Question, question_id)
     if question is None:
+        log.warning(
+            "question delete rejected",
+            extra={"question_id": str(question_id), "reason": "not_found"},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found")
     section = await _get_section(db, question.section_id)
     await _assert_editable(db, section.exam_id)
+    question_type = question.type.value
     await db.delete(question)
+    log.info(
+        "question deleted",
+        extra={
+            "question_id": str(question_id),
+            "section_id": str(section.id),
+            "exam_id": str(section.exam_id),
+            "question_type": question_type,
+            "admin_id": str(admin.id),
+        },
+    )
 
 
 # ---------------------------------------------------------------- students
@@ -1144,12 +1450,31 @@ async def create_student(
     db.add(student)
     try:
         await db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         await db.rollback()
+        # Expected caller fault (duplicate enrollment ID or email), not a server
+        # fault — no stack trace, and the address is masked because it is PII.
+        log.warning(
+            "student create conflict",
+            extra={
+                "enrollment_id": payload.student_id,
+                "email_masked": mask_email(payload.email),
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"Enrollment ID {payload.student_id} or email {payload.email} already exists",
         ) from None
+    log.info(
+        "student created",
+        extra={
+            "student_id": str(student.id),
+            "enrollment_id": student.student_id,
+            "cohort": student.cohort,
+            "admin_id": str(admin.id),
+        },
+    )
     return StudentOut.model_validate(student)
 
 
@@ -1209,6 +1534,11 @@ async def bulk_upload_students(
             meta={"created": created, "skipped": skipped},
         )
     )
+    # The CSV rows carry names and email addresses, so only the counts are logged.
+    log.info(
+        "student bulk upload completed",
+        extra={"created": created, "skipped": skipped, "admin_id": str(admin.id)},
+    )
     return BulkResult(created=created, skipped=skipped, errors=errors[:50])
 
 
@@ -1226,6 +1556,9 @@ async def list_students(
 async def _get_student(db: AsyncSession, student_id: uuid.UUID) -> Student:
     student = await db.get(Student, student_id)
     if student is None:
+        log.warning(
+            "admin lookup failed", extra={"entity": "student", "student_id": str(student_id)}
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Student not found")
     return student
 
@@ -1242,11 +1575,27 @@ async def update_student(
         setattr(student, field, value)
     try:
         await db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         await db.rollback()
+        log.warning(
+            "student update conflict",
+            extra={
+                "student_id": str(student_id),
+                "email_masked": mask_email(updates.get("email")),
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"Email {updates.get('email')} already exists"
         ) from None
+    log.info(
+        "student updated",
+        extra={
+            "student_id": str(student_id),
+            "updated_fields": sorted(updates),
+            "admin_id": str(admin.id),
+        },
+    )
     db.add(
         AuditLog(
             actor_type="admin", actor_id=admin.id, action="student_updated", target=str(student_id)
@@ -1262,6 +1611,14 @@ async def delete_student(student_id: uuid.UUID, admin: AdminDep, db: DbDep) -> N
         select(func.count(ExamAttempt.id)).where(ExamAttempt.student_id == student_id)
     )
     if attempts:
+        log.warning(
+            "student delete blocked",
+            extra={
+                "student_id": str(student_id),
+                "reason": "has_attempts",
+                "attempt_count": attempts,
+            },
+        )
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Student has exam attempts and cannot be deleted; deactivate instead",
@@ -1287,7 +1644,21 @@ async def send_student_magic_link(
     try:
         await send_magic_link_email(student.email, student.name, link)
     except Exception as exc:
+        # Server-side fault (SMTP/provider), so the stack trace earns its keep.
+        # The link is a bearer credential and never appears in the log.
+        log.exception(
+            "magic link email send failed",
+            extra={
+                "student_id": str(student_id),
+                "email_masked": mask_email(student.email),
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not send the email") from exc
+    log.info(
+        "magic link resent by admin",
+        extra={"student_id": str(student_id), "admin_id": str(admin.id)},
+    )
     db.add(
         AuditLog(
             actor_type="admin",
@@ -1312,6 +1683,10 @@ async def bulk_send_magic_links(
     )
     ids = [str(sid) for sid in result.scalars()]
     if not ids:
+        log.warning(
+            "bulk magic link send skipped",
+            extra={"reason": "no_active_recipients", "requested": len(payload.student_ids)},
+        )
         return BulkMagicLinkQueued(queued=0)
 
     db.add(
@@ -1326,6 +1701,10 @@ async def bulk_send_magic_links(
     from app.tasks.mailer_tasks import send_bulk_magic_links
 
     send_bulk_magic_links.delay(ids)
+    log.info(
+        "bulk magic link send queued",
+        extra={"count": len(ids), "admin_id": str(admin.id)},
+    )
     return BulkMagicLinkQueued(queued=len(ids))
 
 
@@ -1343,6 +1722,14 @@ async def create_exam_invites(
     )
     students = list(result.scalars())
     if not students:
+        log.warning(
+            "exam invites skipped",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "no_active_recipients",
+                "requested": len(payload.student_ids),
+            },
+        )
         return InviteQueued(queued=0)
 
     existing_result = await db.execute(
@@ -1383,6 +1770,16 @@ async def create_exam_invites(
     from app.tasks.mailer_tasks import send_bulk_invites
 
     send_bulk_invites.delay(items)
+    # `items` carries raw invite tokens and addresses; only counts are logged.
+    log.info(
+        "exam invites queued",
+        extra={
+            "exam_id": str(exam_id),
+            "count": len(items),
+            "rotated": len(existing_by_student),
+            "admin_id": str(admin.id),
+        },
+    )
     return InviteQueued(queued=len(items))
 
 
@@ -1395,6 +1792,7 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
     here is the difference between a bad question and a cancelled exam."""
     exam = await paper.load_exam_tree(db, exam_id)
     if exam is None:
+        log.warning("exam publish blocked", extra={"exam_id": str(exam_id), "reason": "not_found"})
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found")
 
     problems: list[str] = []
@@ -1455,6 +1853,16 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
         )
 
     if problems:
+        # Count only: the messages embed section and DI-group titles, which are
+        # paper content. The caller already receives the detail in the 422 body.
+        log.warning(
+            "exam publish blocked",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "validation_failed",
+                "problem_count": len(problems),
+            },
+        )
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             {"message": "Exam is not ready to publish", "problems": problems},
@@ -1468,6 +1876,16 @@ async def publish_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Publis
     )
     await db.flush()
 
+    log.info(
+        "exam published",
+        extra={
+            "exam_id": str(exam_id),
+            "admin_id": str(admin.id),
+            "total_questions": total_questions,
+            "total_marks": total_marks,
+            "warning_count": len(warnings),
+        },
+    )
     return PublishResult(
         exam_id=exam.id,
         status=exam.status,
@@ -1485,6 +1903,7 @@ async def close_exam(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> ExamOut:
         AuditLog(actor_type="admin", actor_id=admin.id, action="exam_closed", target=str(exam_id))
     )
     await db.flush()
+    log.info("exam closed", extra={"exam_id": str(exam_id), "admin_id": str(admin.id)})
     return ExamOut.model_validate(exam)
 
 
@@ -1502,27 +1921,72 @@ async def live_monitor_ws(websocket: WebSocket, exam_id: uuid.UUID, db: DbDep) -
     """Push-based replacement for polling `GET .../live`. Browsers can't set a custom
     Authorization header on a WS handshake, so auth is done manually here from a
     ?token= query param instead of via Depends(current_admin)."""
+    # The WS handshake is not covered by the HTTP access log or by
+    # Depends(current_admin), so every rejection below is logged here or it is
+    # recorded nowhere at all. The token itself is never logged.
     token = websocket.query_params.get("token")
     if not token:
+        log.warning(
+            "live monitor ws auth failed",
+            extra={"exam_id": str(exam_id), "reason": "no_credentials"},
+        )
         await websocket.close(code=4401)
         return
     try:
         payload = decode_token(token)
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as exc:
+        log.warning(
+            "live monitor ws auth failed",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "token_invalid",
+                "error_type": type(exc).__name__,
+            },
+        )
         await websocket.close(code=4401)
         return
     if payload.get("type") != "access" or payload.get("role") != "admin":
+        # A student token on the invigilation socket is the shape a privilege
+        # escalation attempt takes.
+        log.warning(
+            "live monitor ws auth failed",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "wrong_token_type_or_role",
+                "actual_role": payload.get("role"),
+            },
+        )
         await websocket.close(code=4401)
         return
     if await cache.is_jti_denied(payload.get("jti", "")):
+        log.warning(
+            "live monitor ws auth failed",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "token_revoked",
+                "jti": payload.get("jti", ""),
+            },
+        )
         await websocket.close(code=4401)
         return
     admin = await db.get(Admin, uuid.UUID(payload["sub"]))
     if admin is None or not admin.is_active:
+        log.warning(
+            "live monitor ws auth failed",
+            extra={
+                "exam_id": str(exam_id),
+                "reason": "admin_missing_or_inactive",
+                "admin_id": payload.get("sub"),
+            },
+        )
         await websocket.close(code=4401)
         return
     exam = await db.get(Exam, exam_id)
     if exam is None:
+        log.warning(
+            "live monitor ws rejected",
+            extra={"exam_id": str(exam_id), "reason": "exam_not_found"},
+        )
         await websocket.close(code=4404)
         return
 
@@ -1537,7 +2001,12 @@ async def live_monitor_ws(websocket: WebSocket, exam_id: uuid.UUID, db: DbDep) -
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
-        pass
+        # Routine — the invigilator closed the tab. Recorded at INFO only so the
+        # socket's lifetime is visible; there is no access-log entry for a WS.
+        log.info(
+            "live monitor ws disconnected",
+            extra={"exam_id": str(exam_id), "admin_id": str(admin.id)},
+        )
     finally:
         live_connections.disconnect(str(exam_id), websocket)
 
@@ -1547,8 +2016,20 @@ async def force_submit(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> dic
     """Invigilator override — e.g. a student caught cheating, or a stuck client."""
     attempt = await db.get(ExamAttempt, attempt_id)
     if attempt is None:
+        log.warning(
+            "force submit rejected",
+            extra={"attempt_id": str(attempt_id), "reason": "attempt_not_found"},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found")
     if attempt.status is not AttemptStatus.in_progress:
+        log.info(
+            "force submit no-op",
+            extra={
+                "attempt_id": str(attempt_id),
+                "reason": "already_submitted",
+                "attempt_status": attempt.status.value,
+            },
+        )
         return {"status": attempt.status.value, "detail": "Already submitted"}
 
     from app.services import answers as answer_service
@@ -1581,6 +2062,18 @@ async def force_submit(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> dic
         )
     )
 
+    log.info(
+        "attempt force submitted",
+        extra={
+            "attempt_id": str(attempt_id),
+            "exam_id": str(attempt.exam_id),
+            "admin_id": str(admin.id),
+            "buffered_answers_flushed": len(buffered) if buffered else 0,
+            "grading_complete": attempt.grading_complete,
+            "coding_submission_count": len(new_submissions),
+        },
+    )
+
     if new_submissions:
         # Commit before enqueueing so the worker's own connection sees the rows.
         await db.commit()
@@ -1590,10 +2083,17 @@ async def force_submit(attempt_id: uuid.UUID, admin: AdminDep, db: DbDep) -> dic
         for submission_id in new_submissions:
             try:
                 evaluate_coding_submission.delay(str(submission_id))
-            except Exception:
+            except Exception as exc:
                 # A broker outage must not fail the invigilator's force-submit;
                 # the rows are saved at PENDING and re-runnable from the review UI.
-                log.exception("could not queue AI evaluation for submission %s", submission_id)
+                log.exception(
+                    "could not queue AI evaluation",
+                    extra={
+                        "submission_id": str(submission_id),
+                        "attempt_id": str(attempt_id),
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
     return {"status": attempt.status.value, "detail": "Attempt submitted"}
 
@@ -1605,11 +2105,31 @@ async def extend_time(
     """Grants extra time for a documented technical issue. Written to the audit log
     because time grants are the most abuse-prone admin action."""
     if not 1 <= minutes <= 60:
+        log.warning(
+            "time extension rejected",
+            extra={
+                "attempt_id": str(attempt_id),
+                "reason": "minutes_out_of_range",
+                "minutes": minutes,
+            },
+        )
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "minutes must be between 1 and 60")
     attempt = await db.get(ExamAttempt, attempt_id)
     if attempt is None:
+        log.warning(
+            "time extension rejected",
+            extra={"attempt_id": str(attempt_id), "reason": "attempt_not_found"},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found")
     if attempt.status is not AttemptStatus.in_progress:
+        log.warning(
+            "time extension rejected",
+            extra={
+                "attempt_id": str(attempt_id),
+                "reason": "attempt_not_in_progress",
+                "attempt_status": attempt.status.value,
+            },
+        )
         raise HTTPException(status.HTTP_409_CONFLICT, "Attempt is not in progress")
 
     from datetime import timedelta
@@ -1630,6 +2150,17 @@ async def extend_time(
             meta={"minutes": minutes},
         )
     )
+    # Time grants are the most abuse-prone admin action; the audit row is in the
+    # DB, this line puts the same fact in the operational log.
+    log.info(
+        "attempt time extended",
+        extra={
+            "attempt_id": str(attempt_id),
+            "admin_id": str(admin.id),
+            "minutes": minutes,
+            "new_deadline_at": attempt.deadline_at.isoformat(),
+        },
+    )
     return {"deadline_at": attempt.deadline_at.isoformat()}
 
 
@@ -1639,6 +2170,12 @@ async def extend_time(
 @router.get("/exams/{exam_id}/results.xlsx")
 async def export_results(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Response:
     filename, content = await export.build_results_workbook(db, exam_id)
+    # An export is a bulk extraction of every student's marks — a data-access
+    # event worth recording even though the endpoint is a GET.
+    log.info(
+        "results exported",
+        extra={"exam_id": str(exam_id), "admin_id": str(admin.id), "size_bytes": len(content)},
+    )
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1713,6 +2250,9 @@ async def analytics(exam_id: uuid.UUID, admin: AdminDep, db: DbDep) -> Analytics
 async def _get_attempt(db: AsyncSession, attempt_id: uuid.UUID) -> ExamAttempt:
     attempt = await db.get(ExamAttempt, attempt_id)
     if attempt is None:
+        log.warning(
+            "admin lookup failed", extra={"entity": "attempt", "attempt_id": str(attempt_id)}
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found")
     return attempt
 
@@ -1874,6 +2414,19 @@ async def export_attempts(
     )
     order_expr = _attempt_sort_expr(sort, order)
     filename, content = await export.build_attempts_workbook(db, conditions, order_expr)
+    # Same reasoning as the per-exam export: bulk extraction of scored attempts,
+    # so the filter shape is recorded (never the search text, which is free-form
+    # and may contain a student's name or address).
+    log.info(
+        "attempts exported",
+        extra={
+            "admin_id": str(admin.id),
+            "exam_id": str(exam_id) if exam_id else None,
+            "cohort": cohort,
+            "filter_count": len(conditions),
+            "size_bytes": len(content),
+        },
+    )
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1964,6 +2517,11 @@ async def attempt_questions(
     attempt = await _get_attempt(db, attempt_id)
     exam = await paper.load_exam_tree(db, attempt.exam_id)
     if exam is None:
+        # The attempt row survived its exam — a dangling FK, not a bad request.
+        log.error(
+            "attempt references a missing exam",
+            extra={"attempt_id": str(attempt_id), "exam_id": str(attempt.exam_id)},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found")
 
     answers_result = await db.execute(select(Answer).where(Answer.attempt_id == attempt.id))
@@ -2135,6 +2693,10 @@ def _needs_review(submission: CodingSubmission | None) -> bool:
 async def _get_submission(db: AsyncSession, submission_id: uuid.UUID) -> CodingSubmission:
     submission = await db.get(CodingSubmission, submission_id)
     if submission is None:
+        log.warning(
+            "admin lookup failed",
+            extra={"entity": "coding_submission", "submission_id": str(submission_id)},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Coding submission not found")
     return submission
 
@@ -2263,6 +2825,15 @@ async def grade_coding_submission(
     submission = await _get_submission(db, submission_id)
 
     if payload.final_score > submission.max_marks + 1e-6:
+        log.warning(
+            "coding grade rejected",
+            extra={
+                "submission_id": str(submission_id),
+                "reason": "score_exceeds_max",
+                "requested_score": payload.final_score,
+                "max_marks": submission.max_marks,
+            },
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"Final score cannot exceed this question's {submission.max_marks:g} marks",
@@ -2329,8 +2900,20 @@ async def reevaluate_coding_submission(
     try:
         evaluate_coding_submission.delay(str(submission.id))
     except Exception as exc:
+        # The status reset above is already committed, so the row now sits at
+        # PENDING with nothing scheduled to pick it up. The admin sees a 503 and
+        # can retry, but only this line records that the queue, not the
+        # evaluator, is what broke.
+        log.exception(
+            "could not queue re-evaluation; submission left pending",
+            extra={"submission_id": str(submission.id)},
+        )
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Could not queue the evaluation"
         ) from exc
 
+    log.info(
+        "coding submission re-evaluation queued",
+        extra={"submission_id": str(submission.id), "attempt_id": str(submission.attempt_id)},
+    )
     return await _submission_detail(db, submission)

@@ -14,9 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import cache
 from app.config import settings
 from app.db import get_db
+from app.logging_config import bind_request_context, get_logger
 from app.models import Admin, AttemptStatus, Exam, ExamAttempt, Student
 from app.security import decode_token
 from app.seb import verify_seb_request
+
+log = get_logger(__name__)
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -38,17 +41,38 @@ class TokenData:
 async def get_token_data(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ) -> TokenData:
+    # Every rejection below logs a distinct `reason`. The client always gets the
+    # same opaque 401 — that's deliberate — so the log is the only place the
+    # difference between "expired", "revoked" and "forged" is recorded. The
+    # token itself is never logged, only its jti, which is a random opaque id.
     if creds is None:
+        log.warning("auth rejected", extra={"reason": "no_bearer_credentials"})
         raise CREDENTIALS_ERROR
     try:
         payload = decode_token(creds.credentials)
-    except jwt.PyJWTError:
+    except jwt.ExpiredSignatureError:
+        log.info("auth rejected", extra={"reason": "token_expired"})
+        raise CREDENTIALS_ERROR from None
+    except jwt.PyJWTError as exc:
+        log.warning(
+            "auth rejected",
+            extra={"reason": "token_invalid", "error_type": type(exc).__name__},
+        )
         raise CREDENTIALS_ERROR from None
     if payload.get("type") != "access":
+        log.warning(
+            "auth rejected",
+            extra={"reason": "wrong_token_type", "token_type": payload.get("type")},
+        )
         raise CREDENTIALS_ERROR
     jti = payload.get("jti", "")
     if await cache.is_jti_denied(jti):
+        log.warning("auth rejected", extra={"reason": "token_revoked", "jti": jti})
         raise CREDENTIALS_ERROR
+
+    # Stamp the actor onto the correlation context so every subsequent line this
+    # request emits identifies who made it, without each call site passing it.
+    bind_request_context(actor=f"{payload.get('role', '?')}:{payload['sub']}")
     return TokenData(
         subject=payload["sub"],
         role=payload.get("role", ""),
@@ -62,9 +86,18 @@ async def current_student(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Student:
     if token.role != "student":
+        log.warning(
+            "authorization denied",
+            extra={"reason": "student_role_required", "actual_role": token.role},
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Student access required")
     student = await db.get(Student, uuid.UUID(token.subject))
-    if student is None or not student.is_active:
+    if student is None:
+        # A validly-signed token for a student row that no longer exists.
+        log.warning("auth rejected", extra={"reason": "student_not_found"})
+        raise CREDENTIALS_ERROR
+    if not student.is_active:
+        log.warning("auth rejected", extra={"reason": "student_inactive"})
         raise CREDENTIALS_ERROR
     return student
 
@@ -74,9 +107,19 @@ async def current_admin(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Admin:
     if token.role != "admin":
+        # A student token presented to an admin route is the shape a privilege
+        # escalation attempt takes, so this one is worth alerting on.
+        log.warning(
+            "authorization denied",
+            extra={"reason": "admin_role_required", "actual_role": token.role},
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
     admin = await db.get(Admin, uuid.UUID(token.subject))
-    if admin is None or not admin.is_active:
+    if admin is None:
+        log.warning("auth rejected", extra={"reason": "admin_not_found"})
+        raise CREDENTIALS_ERROR
+    if not admin.is_active:
+        log.warning("auth rejected", extra={"reason": "admin_inactive"})
         raise CREDENTIALS_ERROR
     return admin
 
@@ -97,6 +140,10 @@ async def active_attempt(
     )
     attempt = result.scalar_one_or_none()
     if attempt is None:
+        log.info(
+            "no in-progress attempt for student",
+            extra={"student_id": str(student.id)},
+        )
         raise HTTPException(status.HTTP_409_CONFLICT, "No exam in progress")
     return attempt
 
@@ -117,6 +164,12 @@ async def resolve_deadline(attempt: ExamAttempt) -> datetime:
     """Redis is the fast path; the attempt row is the source of truth if Redis is cold."""
     deadline = await cache.get_deadline(str(attempt.id))
     if deadline is None:
+        # Cold Redis on the exam-critical path. Correct, but slower and worth
+        # noticing if it starts happening for every request.
+        log.info(
+            "deadline cache miss; falling back to attempt row",
+            extra={"attempt_id": str(attempt.id)},
+        )
         deadline = attempt.deadline_at
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=UTC)
@@ -134,6 +187,13 @@ async def writable_attempt(
     if datetime.now(UTC) > deadline.replace(tzinfo=deadline.tzinfo or UTC):
         remaining = (datetime.now(UTC) - deadline).total_seconds()
         if remaining > settings.deadline_grace_seconds:
+            log.info(
+                "write rejected past deadline",
+                extra={
+                    "attempt_id": str(attempt.id),
+                    "seconds_past_deadline": round(remaining, 1),
+                },
+            )
             raise HTTPException(
                 status.HTTP_410_GONE, "Exam time has expired; your answers were submitted"
             )

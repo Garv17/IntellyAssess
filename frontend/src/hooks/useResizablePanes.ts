@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { errorContext, log } from '../logger';
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -12,9 +13,10 @@ function loadRatios(key: string, defaults: number[]): number[] {
     if (Array.isArray(parsed) && parsed.length === defaults.length && parsed.every((n) => typeof n === 'number')) {
       return parsed as number[];
     }
-  } catch {
+  } catch (err) {
     // Storage can be unavailable or hold a stale shape from an older layout —
     // either way, falling back to the default split is harmless.
+    log.info('pane ratios could not be read', { key, ...errorContext(err) });
   }
   return defaults;
 }
@@ -54,8 +56,9 @@ export function useResizablePanes(
   useEffect(() => {
     try {
       window.localStorage.setItem(key, JSON.stringify(ratios));
-    } catch {
+    } catch (err) {
       // Resizing still works for the session even if it can't persist.
+      log.info('pane ratios could not be persisted', { key, ...errorContext(err) });
     }
   }, [key, ratios]);
 
@@ -114,7 +117,8 @@ function loadShare(key: string, fallback: number): number {
     const raw = window.localStorage.getItem(key);
     const parsed = raw ? Number(JSON.parse(raw)) : NaN;
     return Number.isFinite(parsed) ? clamp(parsed, 0, 100) : fallback;
-  } catch {
+  } catch (err) {
+    log.info('split share could not be read', { key, ...errorContext(err) });
     return fallback;
   }
 }
@@ -175,8 +179,9 @@ export function useVerticalSplit(key: string, defaultEditorShare: number, opts: 
   useEffect(() => {
     try {
       window.localStorage.setItem(key, JSON.stringify(share));
-    } catch {
+    } catch (err) {
       // Resizing still works for the session even if it can't persist.
+      log.info('split share could not be persisted', { key, ...errorContext(err) });
     }
   }, [key, share]);
 

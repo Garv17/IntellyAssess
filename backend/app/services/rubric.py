@@ -15,6 +15,9 @@ from pathlib import Path
 import yaml
 
 from app.config import settings
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 # backend/ — the Docker image's WORKDIR, and the repo dir when run locally.
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -58,10 +61,19 @@ def load_rubric(path_str: str | None = None) -> Rubric:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except FileNotFoundError as exc:
+        # A deploy/config fault, not a data fault: get_rubric() is lru_cached and
+        # called per submission, so every coding evaluation on this worker fails
+        # until the file is in place. The resolved absolute path is the whole
+        # diagnosis — it is almost always a bind-mount or WORKDIR mismatch.
+        log.error(
+            "coding rubric file missing",
+            extra={"rubric_path": str(path), "configured": settings.coding_rubric_path},
+        )
         raise RuntimeError(f"Coding rubric not found at {path}") from exc
 
     criteria_raw = raw.get("criteria") or {}
     if not criteria_raw:
+        log.error("coding rubric defines no criteria", extra={"rubric_path": str(path)})
         raise RuntimeError(f"Rubric {path} defines no criteria")
 
     criteria = tuple(
@@ -78,10 +90,25 @@ def load_rubric(path_str: str | None = None) -> Rubric:
     if abs(total - max_marks) > 1e-6:
         # A rubric whose parts don't add up to its whole would silently cap every
         # submission below (or let it exceed) the advertised maximum.
+        log.error(
+            "coding rubric marks do not add up",
+            extra={"rubric_path": str(path), "criteria_total": total, "max_marks": max_marks},
+        )
         raise RuntimeError(
             f"Rubric {path}: criteria marks sum to {total:g} but max_marks is {max_marks:g}"
         )
 
+    # Once per worker process (get_rubric is lru_cached): pins down which marking
+    # scheme a batch of evaluations was actually graded against.
+    log.info(
+        "coding rubric loaded",
+        extra={
+            "rubric_path": str(path),
+            "rubric_version": str(raw.get("version", "1")),
+            "max_marks": max_marks,
+            "criteria": [c.key for c in criteria],
+        },
+    )
     return Rubric(version=str(raw.get("version", "1")), max_marks=max_marks, criteria=criteria)
 
 

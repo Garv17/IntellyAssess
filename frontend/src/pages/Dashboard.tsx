@@ -7,6 +7,7 @@ import { Identity } from '../components/Avatar';
 import DropdownMenu, { DropdownItem } from '../components/DropdownMenu';
 import EmptyState from '../components/EmptyState';
 import { SkeletonCardGrid } from '../components/Skeleton';
+import { errorContext, log } from '../logger';
 
 // SEB's own browser identifies itself in the UA string (e.g. "...SEB/3.7...").
 // Used to tell "launch SEB" (outside it) apart from "start exam" (already inside it).
@@ -36,6 +37,7 @@ export default function Dashboard() {
           navigate('/', { replace: true });
           return;
         }
+        log.warn('dashboard load failed', errorContext(err));
         setError(err instanceof Error ? err.message : 'Could not load exams');
       } finally {
         setLoading(false);
@@ -50,6 +52,9 @@ export default function Dashboard() {
       await api.startExam(examId);
       navigate('/exam');
     } catch (err) {
+      // A student blocked at the door on exam day — the exam id is the thing
+      // api.ts's path-level line can't tell you.
+      log.error('exam start failed', { exam_id: examId, ...errorContext(err) });
       setError(err instanceof Error ? err.message : 'Could not start the exam');
       setStarting(null);
     }

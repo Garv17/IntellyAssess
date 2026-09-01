@@ -9,6 +9,7 @@ import QuestionView from '../components/QuestionView';
 import SaveIndicator from '../components/SaveIndicator';
 import { useAutoSave } from '../hooks/useAutoSave';
 import { useExamTimer } from '../hooks/useExamTimer';
+import { errorContext, log } from '../logger';
 
 type AnswerMap = Record<string, AnswerSave>;
 
@@ -59,6 +60,13 @@ export default function Exam() {
           navigate('/submitted', { replace: true });
           return;
         }
+        // Worth its own line even though api.ts logged the response: this is
+        // the one failure where a student's finished work is not yet safe.
+        log.error('exam submission failed', {
+          auto,
+          unsaved_answers: autoSave.pendingCount(),
+          ...errorContext(err),
+        });
         submittedRef.current = false;
         setError(err instanceof Error ? err.message : 'Submission failed. Please retry.');
       } finally {
@@ -88,6 +96,8 @@ export default function Exam() {
           navigate('/dashboard', { replace: true });
           return;
         }
+        // The student is looking at an error screen instead of their paper.
+        log.error('exam paper failed to load', errorContext(err));
         setError(err instanceof Error ? err.message : 'Could not load the exam');
       } finally {
         setLoading(false);

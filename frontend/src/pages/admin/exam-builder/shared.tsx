@@ -4,6 +4,7 @@ import { api, type Difficulty, type ParamDef } from '../../../api';
 import Markdown from '../../../components/Markdown';
 import SqlResultGrid from '../../../components/SqlResultGrid';
 import SqlSchemaExplorer from '../../../components/SqlSchemaExplorer';
+import { errorContext, log } from '../../../logger';
 
 export interface FormProps {
   sectionId: string;
@@ -297,7 +298,12 @@ export function BoilerplatePreview({
           api
             .previewBoilerplate(lang, functionName, returnType, parameters)
             .then((r): [string, string] => [lang, r.code])
-            .catch((): [string, string] => [lang, '(preview failed)']),
+            .catch((err): [string, string] => {
+              // The author only sees "(preview failed)" in the code pane; which
+              // language and why never reaches them.
+              log.warn('boilerplate preview failed', { language: lang, ...errorContext(err) });
+              return [lang, '(preview failed)'];
+            }),
         ),
       ).then((entries) => setPreviews(Object.fromEntries(entries)));
     }, 400);

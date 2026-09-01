@@ -6,15 +6,29 @@ which run no event loop — see app/sync_db.py for why that's a separate world).
 
 from __future__ import annotations
 
-import logging
-
 import httpx
 
 from app.config import settings
+from app.logging_config import get_logger, mask_email
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email"
+
+
+def _brevo_error_code(response: httpx.Response) -> str | None:
+    """The `code` field out of a Brevo error body, or None.
+
+    Deliberately not the whole body: the failing request carries the magic link
+    and the recipient's address, and Brevo echoes parts of a rejected payload
+    back. `code` ("invalid_parameter", "unauthorized", …) is the piece that
+    actually tells an operator what to fix and cannot contain a credential.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("code") if isinstance(body, dict) else None
 
 
 def _magic_link_payload(to_email: str, to_name: str, link: str) -> dict:
@@ -38,11 +52,22 @@ def _headers() -> dict:
 
 async def send_magic_link_email(to_email: str, to_name: str, link: str) -> None:
     payload = _magic_link_payload(to_email, to_name, link)
+    # `link` is a bearer credential and `_headers()` carries the Brevo API key —
+    # neither appears in any line below, only the masked recipient.
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(BREVO_ENDPOINT, json=payload, headers=_headers())
     if response.status_code >= 300:
-        log.error("brevo send failed: %s %s", response.status_code, response.text)
+        log.error(
+            "brevo send failed",
+            extra={
+                "kind": "magic_link",
+                "recipient": mask_email(to_email),
+                "status": response.status_code,
+                "brevo_code": _brevo_error_code(response),
+            },
+        )
         response.raise_for_status()
+    log.info("brevo send ok", extra={"kind": "magic_link", "recipient": mask_email(to_email)})
 
 
 def send_magic_link_email_sync(to_email: str, to_name: str, link: str) -> None:
@@ -51,8 +76,19 @@ def send_magic_link_email_sync(to_email: str, to_name: str, link: str) -> None:
     with httpx.Client(timeout=10) as client:
         response = client.post(BREVO_ENDPOINT, json=payload, headers=_headers())
     if response.status_code >= 300:
-        log.error("brevo send failed: %s %s", response.status_code, response.text)
+        log.error(
+            "brevo send failed",
+            extra={
+                "kind": "magic_link_sync",
+                "recipient": mask_email(to_email),
+                "status": response.status_code,
+                "brevo_code": _brevo_error_code(response),
+            },
+        )
         response.raise_for_status()
+    log.info(
+        "brevo send ok", extra={"kind": "magic_link_sync", "recipient": mask_email(to_email)}
+    )
 
 
 def _invite_payload(to_email: str, to_name: str, exam_title: str, link: str) -> dict:
@@ -78,5 +114,14 @@ def send_invite_email_sync(to_email: str, to_name: str, exam_title: str, link: s
     with httpx.Client(timeout=10) as client:
         response = client.post(BREVO_ENDPOINT, json=payload, headers=_headers())
     if response.status_code >= 300:
-        log.error("brevo send failed: %s %s", response.status_code, response.text)
+        log.error(
+            "brevo send failed",
+            extra={
+                "kind": "invite",
+                "recipient": mask_email(to_email),
+                "status": response.status_code,
+                "brevo_code": _brevo_error_code(response),
+            },
+        )
         response.raise_for_status()
+    log.info("brevo send ok", extra={"kind": "invite", "recipient": mask_email(to_email)})

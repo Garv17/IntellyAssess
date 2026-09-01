@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -19,6 +18,7 @@ from app.deps import (
     resolve_deadline,
     writable_attempt,
 )
+from app.logging_config import get_logger
 from app.models import (
     Answer,
     AttemptStatus,
@@ -48,7 +48,7 @@ from app.seb import verify_seb_request
 
 router = APIRouter(prefix="/api/exam", tags=["student"])
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -106,18 +106,52 @@ async def start_exam(
 ) -> ExamStateOut:
     """Idempotent. A second call — including a refresh mid-exam — returns the existing
     attempt rather than creating a new one or erroring."""
+    # Every refusal below is a student standing in front of a locked exam, which
+    # is the single most common thing an invigilator has to diagnose live. Each
+    # one records exactly which gate closed.
     exam = await paper.load_exam_tree(db, exam_id)
     if exam is None:
+        log.warning(
+            "exam start refused",
+            extra={"reason": "exam_not_found", "exam_id": str(exam_id), "student_id": str(student.id)},
+        )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found")
     if exam.status is not ExamStatus.published:
+        log.warning(
+            "exam start refused",
+            extra={
+                "reason": "exam_not_published",
+                "exam_id": str(exam_id),
+                "student_id": str(student.id),
+                "exam_status": exam.status.value if hasattr(exam.status, "value") else str(exam.status),
+            },
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Exam is not open")
 
     now = datetime.now(UTC)
     if exam.starts_at and now < _aware(exam.starts_at):
+        log.info(
+            "exam start refused",
+            extra={"reason": "before_window", "exam_id": str(exam_id), "student_id": str(student.id)},
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Exam has not started yet")
     if exam.ends_at and now > _aware(exam.ends_at):
+        log.info(
+            "exam start refused",
+            extra={"reason": "after_window", "exam_id": str(exam_id), "student_id": str(student.id)},
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Exam window has closed")
     if exam.cohort and exam.cohort != student.cohort:
+        log.warning(
+            "exam start refused",
+            extra={
+                "reason": "cohort_mismatch",
+                "exam_id": str(exam_id),
+                "student_id": str(student.id),
+                "exam_cohort": exam.cohort,
+                "student_cohort": student.cohort,
+            },
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not enrolled in this exam")
     if exam.requires_seb:
         verify_seb_request(request, exam.seb_config_key)
@@ -130,6 +164,15 @@ async def start_exam(
     attempt = existing.scalar_one_or_none()
 
     if attempt is not None and attempt.status is not AttemptStatus.in_progress:
+        log.info(
+            "exam start refused",
+            extra={
+                "reason": "already_submitted",
+                "exam_id": str(exam_id),
+                "student_id": str(student.id),
+                "attempt_id": str(attempt.id),
+            },
+        )
         raise HTTPException(status.HTTP_409_CONFLICT, "You have already submitted this exam")
 
     if attempt is None:
@@ -162,6 +205,14 @@ async def start_exam(
                 )
             )
             attempt = existing.scalar_one()
+            log.info(
+                "concurrent exam start resolved to existing attempt",
+                extra={
+                    "exam_id": str(exam_id),
+                    "student_id": str(student.id),
+                    "attempt_id": str(attempt.id),
+                },
+            )
         else:
             db.add(
                 AuditLog(
@@ -170,6 +221,17 @@ async def start_exam(
                     action="exam_started",
                     target=str(exam_id),
                 )
+            )
+            log.info(
+                "exam attempt started",
+                extra={
+                    "exam_id": str(exam_id),
+                    "student_id": str(student.id),
+                    "attempt_id": str(attempt.id),
+                    "deadline_at": deadline.isoformat(),
+                    "duration_minutes": exam.duration_minutes,
+                    "requires_seb": exam.requires_seb,
+                },
             )
 
     deadline = _aware(attempt.deadline_at)
@@ -245,6 +307,14 @@ async def save_answers(
 
     buffered = await cache.buffer_answers(str(attempt.id), batch)
     if not buffered:
+        # Redis is down and every auto-save is now a synchronous DB write. The
+        # exam still works, but this is the leading indicator of the latency
+        # cliff the timing middleware will start warning about. Counts only —
+        # answer content is never logged.
+        log.warning(
+            "answer buffer unavailable; writing straight to database",
+            extra={"attempt_id": str(attempt.id), "answer_count": len(batch)},
+        )
         await answer_service.upsert_answers(db, attempt.id, batch)
 
     deadline = await resolve_deadline(attempt)
@@ -277,6 +347,16 @@ async def heartbeat(
     if focus_lost:
         attempt.focus_loss_count += 1
         await db.flush()
+        # Advisory only — but a running count is what an invigilator is asked
+        # about after the fact, so it needs to exist outside the DB row too.
+        log.info(
+            "focus loss reported",
+            extra={
+                "attempt_id": str(attempt.id),
+                "exam_id": str(attempt.exam_id),
+                "focus_loss_count": attempt.focus_loss_count,
+            },
+        )
         await cache.publish_live_update(str(attempt.exam_id))
     return HeartbeatOut(
         seconds_remaining=cache.seconds_until(deadline),
@@ -299,10 +379,25 @@ async def submit_exam(
     """Final submit. Flushes the answer buffer first so nothing in Redis is lost."""
     if attempt.status is not AttemptStatus.in_progress:
         # Idempotent: a double-click or a race with the sweeper returns the same receipt.
+        log.info(
+            "submit is a no-op; attempt already final",
+            extra={"attempt_id": str(attempt.id), "attempt_status": attempt.status.value},
+        )
         return await _receipt(db, attempt)
+
+    log.info(
+        "exam submission started",
+        extra={"attempt_id": str(attempt.id), "exam_id": str(attempt.exam_id), "auto": auto},
+    )
 
     buffered = await cache.get_buffered_answers(str(attempt.id))
     if buffered:
+        # How much unflushed work the buffer was still holding at submit time —
+        # the number to look at if a student ever reports a lost answer.
+        log.info(
+            "flushed buffered answers at submit",
+            extra={"attempt_id": str(attempt.id), "answer_count": len(buffered)},
+        )
         await answer_service.upsert_answers(db, attempt.id, buffered)
         await db.flush()
 
@@ -332,6 +427,22 @@ async def submit_exam(
 
     receipt = await _receipt(db, attempt)
 
+    log.info(
+        "exam submitted",
+        extra={
+            "attempt_id": str(attempt.id),
+            "exam_id": str(attempt.exam_id),
+            "student_id": str(attempt.student_id),
+            "auto": auto,
+            "score": score,
+            "max_score": max_score,
+            "grading_complete": attempt.grading_complete,
+            "coding_submissions_queued": len(new_submissions),
+            "answered_count": receipt.answered_count,
+            "total_questions": receipt.total_questions,
+        },
+    )
+
     if new_submissions:
         # Commit before enqueueing: the evaluation worker reads these rows over
         # its own connection, and get_db()'s commit doesn't happen until after
@@ -342,14 +453,33 @@ async def submit_exam(
         # Local import avoids a circular import at module load.
         from app.tasks.ai_tasks import evaluate_coding_submission
 
+        queued = 0
         for submission_id in new_submissions:
             try:
                 evaluate_coding_submission.delay(str(submission_id))
+                queued += 1
             except Exception:
                 # A broker outage must never fail the student's submission. The
                 # row is committed and sits at PENDING; an admin can re-run the
                 # evaluation, or grade it by hand, from the review screen.
-                log.exception("Could not queue AI evaluation for submission %s", submission_id)
+                log.exception(
+                    "could not queue AI evaluation for submission",
+                    extra={
+                        "submission_id": str(submission_id),
+                        "attempt_id": str(attempt.id),
+                    },
+                )
+        if queued != len(new_submissions):
+            # The count an admin needs to know how many submissions are stuck
+            # at PENDING and waiting on a manual re-run.
+            log.error(
+                "some coding submissions were not queued for AI evaluation",
+                extra={
+                    "attempt_id": str(attempt.id),
+                    "queued": queued,
+                    "expected": len(new_submissions),
+                },
+            )
 
     return receipt
 

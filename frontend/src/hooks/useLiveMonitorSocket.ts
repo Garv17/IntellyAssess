@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { tokens, type LiveMonitor } from '../api';
+import { log } from '../logger';
 
 export type SocketStatus = 'connecting' | 'open' | 'offline';
 
@@ -25,18 +26,36 @@ export function useLiveMonitorSocket(
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const url = `${proto}://${window.location.host}/api/admin/exams/${examId}/live/ws?token=${encodeURIComponent(tokens.access ?? '')}`;
       setStatus('connecting');
+      // The URL carries the access token as a query parameter (browsers can't
+      // set headers on a WebSocket handshake) — never log it.
+      log.info('live monitor socket connecting', { exam_id: examId });
       socket = new WebSocket(url);
-      socket.onopen = () => setStatus('open');
+      socket.onopen = () => {
+        log.info('live monitor socket open', { exam_id: examId });
+        setStatus('open');
+      };
       socket.onmessage = (e) => {
         const data = JSON.parse(e.data);
         if (data?.type === 'ping') return;
         onSnapshotRef.current(data);
       };
-      socket.onclose = () => {
+      socket.onclose = (e) => {
+        log.info('live monitor socket closed', {
+          exam_id: examId,
+          code: e.code,
+          clean: e.wasClean,
+          will_retry: !closed,
+        });
         setStatus('offline');
         if (!closed) retryTimer = window.setTimeout(connect, 5000);
       };
-      socket.onerror = () => socket?.close();
+      // The browser's error event carries no detail by design; the close that
+      // follows it is where the code actually is. Logged anyway so a monitor
+      // stuck in a connect/error/retry loop is visible as more than silence.
+      socket.onerror = () => {
+        log.warn('live monitor socket error', { exam_id: examId });
+        socket?.close();
+      };
     };
 
     connect();

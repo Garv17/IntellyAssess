@@ -8,6 +8,8 @@ x-backend-env: &backend-env
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
   UPLOAD_DIR: /app/uploads
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
   CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:5180","http://localhost:8080"]'}
  
 x-backend-env-file: &backend-env-file

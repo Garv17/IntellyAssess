@@ -4,6 +4,7 @@ cannot slow down a live exam."""
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from datetime import UTC
 
@@ -13,14 +14,19 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logging_config import get_logger
 from app.models import Answer, Exam, ExamAttempt, Question, QuestionType, Section, Student
+
+log = get_logger(__name__)
 
 HEADER_FONT = Font(bold=True)
 
 
 async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[str, bytes]:
+    started = time.monotonic()
     exam = await db.get(Exam, exam_id)
     if exam is None:
+        log.warning("results export failed", extra={"reason": "exam_not_found", "exam_id": str(exam_id)})
         raise ValueError("Exam not found")
 
     rows = await db.execute(
@@ -126,12 +132,26 @@ async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[
     buffer = io.BytesIO()
     wb.save(buffer)
     safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in exam.title).strip()
-    return f"{safe_title or 'exam'}_results.xlsx", buffer.getvalue()
+    content = buffer.getvalue()
+    # Row count and duration together: this runs against the read replica
+    # precisely because it can get slow, so the numbers that would justify a
+    # change of approach are the ones recorded here.
+    log.info(
+        "results export built",
+        extra={
+            "exam_id": str(exam_id),
+            "rows": len(attempts),
+            "bytes": len(content),
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
+    return f"{safe_title or 'exam'}_results.xlsx", content
 
 
 async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr) -> tuple[str, bytes]:
     """Cross-exam export backing the Student Details filter bar — mirrors whatever
     filters produced the on-screen result set, with no pagination limit."""
+    started = time.monotonic()
     query = (
         select(ExamAttempt, Student, Exam)
         .join(Student, ExamAttempt.student_id == Student.id)
@@ -205,4 +225,16 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
 
     buffer = io.BytesIO()
     wb.save(buffer)
-    return "attempts_export.xlsx", buffer.getvalue()
+    content = buffer.getvalue()
+    # Unpaginated by design: the filter count is the only warning an operator
+    # gets that someone just exported every attempt in the system.
+    log.info(
+        "attempts export built",
+        extra={
+            "filters": len(conditions),
+            "rows": len(results),
+            "bytes": len(content),
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
+    return "attempts_export.xlsx", content

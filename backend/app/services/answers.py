@@ -14,7 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logging_config import get_logger
 from app.models import Answer
+
+log = get_logger(__name__)
 
 SAVEABLE_FIELDS = ("selected_option_id", "code_text", "language", "is_marked_for_review")
 
@@ -62,6 +65,13 @@ async def upsert_answers(
         },
     )
     await db.execute(stmt)
+    # One line per upsert call, never per row. This is the direct-to-Postgres
+    # path, so a steady stream of these means the Redis buffer is not carrying
+    # autosave any more — worth being able to see.
+    log.info(
+        "answers persisted",
+        extra={"attempt_id": str(attempt_id), "answers_written": len(rows)},
+    )
     return len(rows)
 
 

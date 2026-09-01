@@ -308,6 +308,59 @@ The design principle throughout: **degrade the expensive features, never the exa
 - 4 uvicorn workers per API container, 2 containers behind Nginx. Each worker handles ~30 rps of the auto-save path comfortably; this is ~4× headroom on the 62 rps estimate.
 - Postgres: `max_connections=200`, SQLAlchemy pool of 20/worker with `pool_pre_ping`. Read replica for analytics and export so a heavy report can't slow the exam.
 - Celery: two queues. `default` (flush, sweep, magic-link sends, export) runs at concurrency 2 — it is latency-sensitive but cheap. `ai` (coding evaluation) runs at concurrency 4 in its own container: the work is I/O-bound on an HTTP call, not CPU-bound, and nothing there executes code, so neither worker needs a Docker socket or a privileged host. The `ai` worker can be stopped or scaled independently of the exam.
-- Observability: structured JSON logs, `/health` and `/ready`, Prometheus metrics on auto-save p99, flush lag, `ai` queue depth, and active attempts. Flush lag is the number that predicts an exam-day incident; `ai` queue depth predicts only how long admins wait to start grading.
+- Observability: structured JSON logs (§9), `/health` and `/ready`, Prometheus metrics on auto-save p99, flush lag, `ai` queue depth, and active attempts. Flush lag is the number that predicts an exam-day incident; `ai` queue depth predicts only how long admins wait to start grading.
 
 **Pre-exam checklist:** load-test at 1.5× expected concurrency, verify the auto-submit sweeper against a seeded overdue attempt, confirm Redis AOF is on, confirm `OPENAI_API_KEY` is set (or accept that coding answers will be graded by hand), and take a Postgres snapshot immediately before the exam window opens.
+
+---
+
+## 9. Logging
+
+One module owns logging: `backend/app/logging_config.py`. Nothing else calls
+`logging.basicConfig`, and every module takes its logger from `get_logger(__name__)`.
+
+**Two entry points configure it.** `app.main` at import, and the Celery
+`after_setup_logger` / `after_setup_task_logger` signals in `app.tasks.celery_app`.
+Both matter: workers never import `app.main`, so before the signals existed the
+entire worker tier ran on Celery's default format while the web tier ran on ours.
+
+**Format.** One JSON object per line, built with `json.dumps` — never string
+interpolation into a JSON literal, which is how the previous format emitted
+unparseable lines whenever a message contained a quote. `LOG_FORMAT=console`
+switches to a readable single line for local work. Anything passed as
+`extra={...}` becomes its own top-level field, so messages stay short and
+constant and the data stays queryable.
+
+**Correlation.** The HTTP middleware assigns each request an ID — honouring an
+inbound `X-Request-ID` if a proxy set one — stores it in a ContextVar, and echoes
+it on the response. ContextVars are per-task and survive `await`, so every line a
+request emits carries the ID without any call site passing it, and `deps.py`
+stamps the authenticated actor into the same context once the token is validated.
+Celery's `task_prerun` puts the task ID in the same slot, so a coding submission
+can be followed from the student's POST through to the AI evaluation minutes later.
+
+**Levels.** INFO is the floor, in production as well as locally — nothing the
+app emits is below it, because a line that is invisible in production is not
+observability. INFO covers normal business progress: startup, logins, exam
+started/submitted, task outcomes, one line per completed operation. WARNING is a caller fault or a degraded-but-working path —
+a rejected credential, a 4xx, Redis unavailable so auto-save is hitting Postgres
+directly. ERROR is an app fault that needs a human. Health probes (`/health`,
+`/ready`, `/`) are not access-logged unless they fail; loops and per-row work log
+an aggregate count, never a line per row.
+
+**Secrets and PII never reach a sink.** The formatter redacts any field whose name
+contains `password`, `token`, `secret`, `api_key`, `authorization`, `cookie`,
+`pin`, `config_key`, `hash` and similar — recursively, depth-bounded. Emails go
+through `mask_email()`. Secrets that genuinely need comparing across lines — the
+SEB Config Key is the real case — go through `fingerprint()`, a truncated SHA-256
+that is stable and comparable but not reversible. Answer content, student code,
+JWTs, magic links and exam PINs are never logged in any form, at any level.
+Because the redactor matches on substrings, a field holding an already-safe
+fingerprint must be named to avoid them (`exam_key_fp`, not `config_key_fp`) —
+`backend/tests/test_logging.py` locks all of this down.
+
+**Frontend.** `frontend/src/logger.ts` mirrors the same redaction rules and level
+gating in the browser, and an error boundary plus `window.onerror` /
+`unhandledrejection` handlers mean a render crash mid-exam leaves a trace instead
+of a white screen. It reads the `X-Request-ID` off each response, so a client-side
+error can be joined to the server request that caused it.

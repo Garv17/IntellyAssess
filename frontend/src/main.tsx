@@ -2,7 +2,9 @@ import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { tokens } from './api';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
+import { installGlobalErrorHandlers } from './logger';
 import Dashboard from './pages/Dashboard';
 import Exam from './pages/Exam';
 import InviteLanding from './pages/InviteLanding';
@@ -26,8 +28,13 @@ function Guard({ role, children }: { role: 'student' | 'admin'; children: ReactN
   return <>{children}</>;
 }
 
+// Installed before the first render so a crash during initial mount is still
+// reported rather than lost.
+installGlobalErrorHandlers();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
+    <ErrorBoundary>
     <ToastProvider>
     <BrowserRouter>
       <Routes>
@@ -131,5 +138,6 @@ createRoot(document.getElementById('root')!).render(
       </Routes>
     </BrowserRouter>
     </ToastProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

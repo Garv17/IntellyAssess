@@ -12,11 +12,12 @@ by us.
 from __future__ import annotations
 
 import hashlib
-import logging
 
 from fastapi import HTTPException, Request, status
 
-log = logging.getLogger("exam.seb")
+from app.logging_config import fingerprint, get_logger
+
+log = get_logger("app.seb")
 
 SEB_HEADER_NAMES = ("x-safeexambrowser-configkeyhash", "x-safeexambrowser-requesthash")
 
@@ -25,6 +26,10 @@ def verify_seb_request(request: Request, config_key: str | None) -> None:
     if not config_key:
         # requires_seb is true but no key was ever set — fail closed rather than
         # accepting every request as if the check were disabled.
+        log.error(
+            "seb: exam requires SEB but has no config key configured",
+            extra={"method": request.method, "path": request.url.path},
+        )
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "This exam has no Safe Exam Browser configuration set; contact your administrator.",
@@ -36,10 +41,16 @@ def verify_seb_request(request: Request, config_key: str | None) -> None:
     )
     if received is None:
         log.warning(
-            "seb: no SEB header present on %s %s — headers seen: %s",
-            request.method,
-            request.url.path,
-            [h for h in request.headers if h.lower().startswith("x-safeexambrowser")],
+            "seb: request carried no SEB hash header",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                # Header *names* only. The values are the integrity hashes and
+                # are logged nowhere.
+                "seb_headers_present": [
+                    h for h in request.headers if h.lower().startswith("x-safeexambrowser")
+                ],
+            },
         )
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -49,14 +60,24 @@ def verify_seb_request(request: Request, config_key: str | None) -> None:
     url = str(request.url).split("#", 1)[0]
     expected = hashlib.sha256(f"{url}{config_key}".encode("utf-8")).hexdigest()
     if received.lower() != expected.lower():
+        # The Config Key is a shared secret and never appears here; its
+        # fingerprint is enough to tell "the exam is configured with a
+        # different key than the .seb file the student launched" apart from
+        # "the URL SEB hashed is not the URL we saw" — which is what the two
+        # fingerprints below distinguish.
         log.warning(
-            "seb: hash mismatch — url_hashed=%r config_key=%r received=%s expected=%s "
-            "all_seb_headers=%s",
-            url,
-            config_key,
-            received,
-            expected,
-            {h: v for h, v in request.headers.items() if h.lower().startswith("x-safeexambrowser")},
+            "seb: config key hash mismatch",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                # Field names deliberately avoid the substrings the log
+                # redactor scrubs ("config_key", "hash") — these are already
+                # one-way fingerprints and are the whole point of the line.
+                "target_url": url,
+                "exam_key_fp": fingerprint(config_key),
+                "received_fp": fingerprint(received.lower()),
+                "expected_fp": fingerprint(expected.lower()),
+            },
         )
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
