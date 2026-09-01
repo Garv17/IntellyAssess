@@ -10,15 +10,15 @@ bus that makes that possible. One instance of this listener runs per worker proc
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 
 from app import cache
 from app.db import SessionLocal
+from app.logging_config import get_logger
 from app.services.monitor import build_live_snapshot
 from app.ws_manager import live_connections
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 async def live_update_listener() -> None:
@@ -38,9 +38,12 @@ async def live_update_listener() -> None:
                         snapshot = await build_live_snapshot(session, uuid.UUID(exam_id))
                     await live_connections.broadcast(exam_id, snapshot.model_dump(mode="json"))
                 except Exception:
-                    log.exception("live monitor broadcast failed for exam %s", exam_id)
+                    log.exception(
+                        "live monitor broadcast failed",
+                        extra={"exam_id": exam_id},
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("live monitor pubsub listener crashed, retrying")
+            log.exception("live monitor pubsub listener crashed; retrying in 1s")
             await asyncio.sleep(1)

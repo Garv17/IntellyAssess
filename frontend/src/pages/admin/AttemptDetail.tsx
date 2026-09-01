@@ -20,6 +20,7 @@ import { Identity } from '../../components/Avatar';
 import Badge from '../../components/Badge';
 import { SkeletonCard, SkeletonText } from '../../components/Skeleton';
 import Tabs from '../../components/Tabs';
+import { errorContext, log } from '../../logger';
 
 const STATUS_ICON: Record<QuestionReview['status'], React.ReactNode> = {
   correct: <CheckCircle2 size={16} className="urgent" style={{ color: 'var(--ok)' }} />,
@@ -71,7 +72,15 @@ export default function AttemptDetail() {
     void api
       .attemptActivity(attemptId)
       .then((t) => setActivity(t.events))
-      .catch(() => setActivity([]));
+      // An empty timeline is also what a successful load of an attempt with no
+      // events looks like, so without this line the two are indistinguishable.
+      .catch((err) => {
+        log.warn('activity timeline load failed', {
+          attempt_id: attemptId,
+          ...errorContext(err),
+        });
+        setActivity([]);
+      });
   }, [tab, activity, attemptId]);
 
   const correctCount = questions?.filter((q) => q.status === 'correct').length ?? 0;

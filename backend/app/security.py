@@ -8,6 +8,9 @@ import bcrypt
 import jwt
 
 from app.config import settings
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 Role = Literal["student", "admin"]
 
@@ -28,8 +31,15 @@ def hash_password(raw: str) -> str:
 def verify_password(raw: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(_encode_password(raw), hashed.encode())
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
         # Malformed stored hash — treat as a failed login rather than a 500.
+        # This is data corruption, not a wrong password: without a log the
+        # account is simply un-loggable-into forever and nobody finds out why.
+        # Neither the password nor the stored hash is logged.
+        log.error(
+            "password verification failed: stored hash is malformed",
+            extra={"error_type": type(exc).__name__},
+        )
         return False
 
 

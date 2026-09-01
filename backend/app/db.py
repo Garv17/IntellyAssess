@@ -4,6 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -26,6 +29,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except Exception as exc:
+            # Info, not error: an HTTPException raised by a handler unwinds
+            # through here too, and those are already reported as 4xx by the
+            # access middleware. Genuine failures are logged by whoever raised
+            # them; this line only records that the transaction was discarded,
+            # and the error_type is what distinguishes a routine 404 unwind
+            # from a real database fault.
+            log.info(
+                "database session rolled back",
+                extra={"error_type": type(exc).__name__},
+            )
             await session.rollback()
             raise

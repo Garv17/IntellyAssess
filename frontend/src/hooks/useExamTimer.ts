@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { errorContext, log } from '../logger';
 
 /**
  * Countdown display, corrected against the server.
@@ -48,9 +49,14 @@ export function useExamTimer(
           expired.current = true;
           onExpire();
         }
-      } catch {
+      } catch (err) {
         // A failed heartbeat is not fatal — the local countdown carries on and the
-        // server-side sweeper still guarantees submission.
+        // server-side sweeper still guarantees submission. Warn rather than error:
+        // repeated misses mean the clock on screen has drifted from the server's.
+        log.warn('heartbeat sync failed', {
+          unreported_focus_losses: focusLosses.current,
+          ...errorContext(err),
+        });
       }
     };
     const interval = window.setInterval(() => void sync(), 30_000);

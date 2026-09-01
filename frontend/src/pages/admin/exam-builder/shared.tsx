@@ -1,9 +1,10 @@
-import { Plus, Trash2, X } from 'lucide-react';
+import { ImagePlus, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api, type Difficulty, type ParamDef } from '../../../api';
 import Markdown from '../../../components/Markdown';
 import SqlResultGrid from '../../../components/SqlResultGrid';
 import SqlSchemaExplorer from '../../../components/SqlSchemaExplorer';
+import { errorContext, log } from '../../../logger';
 
 export interface FormProps {
   sectionId: string;
@@ -181,28 +182,68 @@ export function SqlTestCaseFields({
 }
 
 /** A Markdown textarea with a Preview toggle, so admins can check rendering
-    (code blocks, tables, images) before saving without leaving the form. */
+    (code blocks, tables, images) before saving without leaving the form.
+    `allowImageUpload` adds an "Insert image" button that uploads a file and
+    appends its markdown image tag to the field — the only way to put an
+    image into an MCQ/coding question body, since unlike a DI group there is
+    no separate image_url column for these question types. */
 export function MarkdownField({
   label,
   value,
   onChange,
   rows = 6,
   required = false,
+  allowImageUpload = false,
+  onError,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   rows?: number;
   required?: boolean;
+  allowImageUpload?: boolean;
+  onError?: (msg: string) => void;
 }) {
   const [preview, setPreview] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const insertImage = async (file: File) => {
+    setUploading(true);
+    try {
+      const { image_url } = await api.uploadImage(file);
+      const tag = `![image](${image_url})`;
+      onChange(value.trim() ? `${value}\n\n${tag}` : tag);
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : 'Image upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="field">
       <div className="field-label-row">
         <span className="field-label">{label}</span>
-        <button type="button" className="btn link" onClick={() => setPreview((p) => !p)}>
-          {preview ? 'Edit' : 'Preview'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {allowImageUpload && (
+            <label className="btn link" style={{ cursor: 'pointer' }}>
+              <ImagePlus size={13} /> {uploading ? 'Uploading…' : 'Insert image'}
+              <input
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void insertImage(file);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          )}
+          <button type="button" className="btn link" onClick={() => setPreview((p) => !p)}>
+            {preview ? 'Edit' : 'Preview'}
+          </button>
+        </div>
       </div>
       {preview ? (
         <div className="markdown-preview">
@@ -297,7 +338,12 @@ export function BoilerplatePreview({
           api
             .previewBoilerplate(lang, functionName, returnType, parameters)
             .then((r): [string, string] => [lang, r.code])
-            .catch((): [string, string] => [lang, '(preview failed)']),
+            .catch((err): [string, string] => {
+              // The author only sees "(preview failed)" in the code pane; which
+              // language and why never reaches them.
+              log.warn('boilerplate preview failed', { language: lang, ...errorContext(err) });
+              return [lang, '(preview failed)'];
+            }),
         ),
       ).then((entries) => setPreviews(Object.fromEntries(entries)));
     }, 400);

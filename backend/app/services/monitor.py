@@ -3,6 +3,7 @@ path (backend/app/pubsub.py) so both compute the exact same view."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import UTC, datetime
 
@@ -10,13 +11,18 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logging_config import get_logger
 from app.models import Answer, AttemptStatus, Exam, ExamAttempt, Student
 from app.schemas import LiveMonitorOut, LiveStudentRow
 
+log = get_logger(__name__)
+
 
 async def build_live_snapshot(db: AsyncSession, exam_id: uuid.UUID) -> LiveMonitorOut:
+    started = time.monotonic()
     exam = await db.get(Exam, exam_id)
     if exam is None:
+        log.warning("live snapshot failed", extra={"reason": "exam_not_found", "exam_id": str(exam_id)})
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found")
 
     students_query = select(Student).order_by(Student.student_id)
@@ -86,6 +92,23 @@ async def build_live_snapshot(db: AsyncSession, exam_id: uuid.UUID) -> LiveMonit
             )
         )
 
+    # Runs on every monitor poll and every pub/sub push, so this is the
+    # highest-volume line in the system — but it is also the only record of
+    # snapshot latency, which is what "the Live Monitor is lagging" turns into.
+    # Silenced by default (see Settings.log_live_monitor / logging_config.py) so
+    # it doesn't bury everything else while an admin tails logs during a live
+    # exam; turn LOG_LIVE_MONITOR on when that latency is the thing in question.
+    log.info(
+        "live snapshot built",
+        extra={
+            "exam_id": str(exam_id),
+            "students": len(students),
+            "not_started": not_started,
+            "in_progress": in_progress,
+            "submitted": submitted,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
     return LiveMonitorOut(
         exam_id=exam_id,
         title=exam.title,

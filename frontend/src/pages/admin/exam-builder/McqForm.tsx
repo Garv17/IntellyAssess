@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { api, type Difficulty } from '../../../api';
 import { useToast } from '../../../components/Toast';
-import { DifficultyPicker, TagInput, type FormProps } from './shared';
+import { DifficultyPicker, MarkdownField, TagInput, type FormProps } from './shared';
 
 export default function McqForm({ sectionId, onDone, onError }: FormProps) {
   const toast = useToast();
@@ -44,10 +44,7 @@ export default function McqForm({ sectionId, onDone, onError }: FormProps) {
 
   return (
     <form onSubmit={submit} className="stack">
-      <label>
-        Question
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} required />
-      </label>
+      <MarkdownField label="Question" value={body} onChange={setBody} rows={3} required allowImageUpload onError={onError} />
       {options.map((option, i) => (
         <label key={i} className="option-row">
           <input

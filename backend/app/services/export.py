@@ -4,6 +4,7 @@ cannot slow down a live exam."""
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from datetime import UTC
 
@@ -13,14 +14,19 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logging_config import get_logger
 from app.models import Answer, Exam, ExamAttempt, Question, QuestionType, Section, Student
+
+log = get_logger(__name__)
 
 HEADER_FONT = Font(bold=True)
 
 
 async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[str, bytes]:
+    started = time.monotonic()
     exam = await db.get(Exam, exam_id)
     if exam is None:
+        log.warning("results export failed", extra={"reason": "exam_not_found", "exam_id": str(exam_id)})
         raise ValueError("Exam not found")
 
     rows = await db.execute(
@@ -126,12 +132,26 @@ async def build_results_workbook(db: AsyncSession, exam_id: uuid.UUID) -> tuple[
     buffer = io.BytesIO()
     wb.save(buffer)
     safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in exam.title).strip()
-    return f"{safe_title or 'exam'}_results.xlsx", buffer.getvalue()
+    content = buffer.getvalue()
+    # Row count and duration together: this runs against the read replica
+    # precisely because it can get slow, so the numbers that would justify a
+    # change of approach are the ones recorded here.
+    log.info(
+        "results export built",
+        extra={
+            "exam_id": str(exam_id),
+            "rows": len(attempts),
+            "bytes": len(content),
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
+    return f"{safe_title or 'exam'}_results.xlsx", content
 
 
 async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr) -> tuple[str, bytes]:
     """Cross-exam export backing the Student Details filter bar — mirrors whatever
     filters produced the on-screen result set, with no pagination limit."""
+    started = time.monotonic()
     query = (
         select(ExamAttempt, Student, Exam)
         .join(Student, ExamAttempt.student_id == Student.id)
@@ -143,6 +163,38 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
     rows = await db.execute(query.order_by(order_expr.nullslast()))
     results = rows.all()
 
+    attempt_ids = [attempt.id for attempt, _, _ in results]
+    breakdown: dict[uuid.UUID, dict[str, float]] = {
+        attempt_id: {"aptitude_score": 0.0, "aptitude_max": 0.0, "coding_score": 0.0, "coding_max": 0.0}
+        for attempt_id in attempt_ids
+    }
+    if attempt_ids:
+        # Same per-question max-marks fallback (`Question.marks` or else
+        # `Section.marks_per_question`) as the single-attempt overview, batched
+        # across every exported attempt.
+        breakdown_rows = await db.execute(
+            select(
+                ExamAttempt.id,
+                Question.type,
+                Answer.score,
+                Question.marks,
+                Section.marks_per_question,
+            )
+            .select_from(ExamAttempt)
+            .join(Section, Section.exam_id == ExamAttempt.exam_id)
+            .join(Question, Question.section_id == Section.id)
+            .outerjoin(
+                Answer, and_(Answer.question_id == Question.id, Answer.attempt_id == ExamAttempt.id)
+            )
+            .where(ExamAttempt.id.in_(attempt_ids))
+        )
+        for attempt_id, qtype, score, marks, marks_per_question in breakdown_rows.all():
+            bucket = breakdown[attempt_id]
+            max_marks = marks if marks is not None else marks_per_question
+            prefix = "coding" if qtype is QuestionType.coding else "aptitude"
+            bucket[f"{prefix}_score"] += score or 0.0
+            bucket[f"{prefix}_max"] += max_marks or 0.0
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Attempts"
@@ -153,7 +205,11 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
         "Cohort",
         "Exam",
         "Status",
-        "Score",
+        "Aptitude Score",
+        "Aptitude Max",
+        "Coding Score",
+        "Coding Max",
+        "Total Score",
         "Max Score",
         "Percentage",
         "Started At",
@@ -170,6 +226,7 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
         score = attempt.total_score
         max_score = attempt.max_score
         pct = round(score / max_score * 100, 2) if score is not None and max_score else None
+        bucket = breakdown[attempt.id]
         duration = None
         if attempt.submitted_at and attempt.started_at:
             duration = round(
@@ -188,6 +245,10 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
                 student.cohort,
                 exam.title,
                 attempt.status.value,
+                round(bucket["aptitude_score"], 2),
+                round(bucket["aptitude_max"], 2),
+                round(bucket["coding_score"], 2),
+                round(bucket["coding_max"], 2),
                 score,
                 max_score,
                 pct,
@@ -205,4 +266,16 @@ async def build_attempts_workbook(db: AsyncSession, conditions: list, order_expr
 
     buffer = io.BytesIO()
     wb.save(buffer)
-    return "attempts_export.xlsx", buffer.getvalue()
+    content = buffer.getvalue()
+    # Unpaginated by design: the filter count is the only warning an operator
+    # gets that someone just exported every attempt in the system.
+    log.info(
+        "attempts export built",
+        extra={
+            "filters": len(conditions),
+            "rows": len(results),
+            "bytes": len(content),
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
+    return "attempts_export.xlsx", content

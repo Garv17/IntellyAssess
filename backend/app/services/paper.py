@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.logging_config import get_logger
 from app.models import CodingProblem, DIGroup, Exam, Question, QuestionType, Section
 from app.schemas import (
     CodingProblemOut,
@@ -26,6 +27,8 @@ from app.schemas import (
     SectionOut,
     TestCaseOut,
 )
+
+log = get_logger(__name__)
 
 
 async def load_exam_tree(db: AsyncSession, exam_id: uuid.UUID) -> Exam | None:
@@ -48,7 +51,13 @@ async def load_exam_tree(db: AsyncSession, exam_id: uuid.UUID) -> Exam | None:
             .selectinload(DIGroup.questions),
         )
     )
-    return result.scalar_one_or_none()
+    exam = result.scalar_one_or_none()
+    if exam is None:
+        # Callers turn this into a 404. Logged because the id came from a token
+        # or a route the caller already passed authorization for, so a miss is
+        # more likely a deleted exam than a bad request.
+        log.warning("exam tree not found", extra={"exam_id": str(exam_id)})
+    return exam
 
 
 def build_question_order(exam: Exam, seed: str) -> dict[str, Any]:
@@ -98,6 +107,11 @@ def build_question_order(exam: Exam, seed: str) -> dict[str, Any]:
             }
         )
 
+    # Deliberately not logged here. This is a pure, deterministic function of
+    # (exam, seed) with no I/O and no failure mode, its only caller already logs
+    # the attempt start that this feeds, and it is called with plain fixtures in
+    # tests — touching ORM attributes for a log line would be the only reason
+    # this function needed a real Exam.
     return {"seed": seed, "sections": sections}
 
 
@@ -171,10 +185,19 @@ def render_paper(exam: Exam, question_order: dict[str, Any]) -> ExamPaperOut:
     }
     sections_by_id = {str(s.id): s for s in exam.sections}
 
+    # Log-only counters. The frozen order can name a section, question or DI
+    # group that has since been deleted from the exam; each is skipped silently,
+    # which quietly shortens a live paper. Counted here and reported once below
+    # rather than per item, since one deletion drops one block per student.
+    dropped_sections = 0
+    dropped_questions = 0
+    dropped_groups = 0
+
     out_sections: list[SectionOut] = []
     for idx, ordered in enumerate(question_order.get("sections", [])):
         section = sections_by_id.get(ordered["id"])
         if section is None:
+            dropped_sections += 1
             continue
         option_order = ordered.get("option_order", {})
 
@@ -183,12 +206,16 @@ def render_paper(exam: Exam, question_order: dict[str, Any]) -> ExamPaperOut:
         for block in ordered["blocks"]:
             if block["kind"] == "question":
                 q = questions_by_id.get(block["question_id"])
+                if q is None:
+                    dropped_questions += 1
                 if q is not None:
                     out_questions.append(
                         _question_out(q, section, option_order.get(block["question_id"]))
                     )
             else:
                 group = groups_by_id.get(block["di_group_id"])
+                if group is None:
+                    dropped_groups += 1
                 if group is not None:
                     used_groups.append(
                         DIGroupOut(
@@ -200,6 +227,8 @@ def render_paper(exam: Exam, question_order: dict[str, Any]) -> ExamPaperOut:
                     )
                 for qid in block["question_ids"]:
                     q = questions_by_id.get(qid)
+                    if q is None:
+                        dropped_questions += 1
                     if q is not None:
                         out_questions.append(_question_out(q, section, option_order.get(qid)))
 
@@ -212,6 +241,17 @@ def render_paper(exam: Exam, question_order: dict[str, Any]) -> ExamPaperOut:
                 questions=out_questions,
                 di_groups=used_groups,
             )
+        )
+
+    if dropped_sections or dropped_questions or dropped_groups:
+        log.warning(
+            "frozen question order references missing content",
+            extra={
+                "exam_id": str(exam.id),
+                "dropped_sections": dropped_sections,
+                "dropped_questions": dropped_questions,
+                "dropped_di_groups": dropped_groups,
+            },
         )
 
     return ExamPaperOut(

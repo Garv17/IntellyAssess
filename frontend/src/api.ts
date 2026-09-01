@@ -5,17 +5,28 @@
  * transparently on 401 (a student must never be logged out mid-exam by an
  * expiring token), and a 410 signals the server closed the exam window, which
  * the exam page turns into an immediate hand-off to the confirmation screen.
+ *
+ * Logging note: request and response bodies are never logged here. Answers,
+ * student code and credentials all pass through this one function, so only
+ * method, path, status and the correlation ID ever reach the logger.
  */
+
+import { errorContext, log, setRequestId } from './logger';
 
 const ACCESS_KEY = 'exam.access';
 const REFRESH_KEY = 'exam.refresh';
 const ROLE_KEY = 'exam.role';
+
+/** Echoed by the backend on every response; see `request_context` in app/main.py. */
+const REQUEST_ID_HEADER = 'X-Request-ID';
 
 export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
     public payload?: unknown,
+    /** Correlation ID of the response that produced this error, when the server sent one. */
+    public requestId?: string | null,
   ) {
     super(message);
   }
@@ -61,11 +72,18 @@ async function refreshAccessToken(): Promise<boolean> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refresh }),
       });
-      if (!res.ok) return false;
+      setRequestId(res.headers.get(REQUEST_ID_HEADER));
+      if (!res.ok) {
+        // A failed refresh is what silently logs a student out mid-exam: the
+        // caller only sees `false` and a generic "session expired".
+        log.warn('token refresh rejected', { status: res.status });
+        return false;
+      }
       const data = await res.json();
       tokens.setAccess(data.access_token);
       return true;
-    } catch {
+    } catch (err) {
+      log.warn('token refresh failed', errorContext(err));
       return false;
     } finally {
       refreshInFlight = null;
@@ -73,6 +91,19 @@ async function refreshAccessToken(): Promise<boolean> {
   })();
 
   return refreshInFlight;
+}
+
+/**
+ * Path safe to log. Some routes carry a secret in the query string — the invite
+ * redeem endpoint takes the magic-link token there — so query values are
+ * replaced wholesale rather than filtered by name. Only the parameter names
+ * survive, which is all that is needed to tell two calls to the same route apart.
+ */
+function safePath(path: string): string {
+  const q = path.indexOf('?');
+  if (q === -1) return path;
+  const names = Array.from(new URLSearchParams(path.slice(q + 1)).keys());
+  return names.length ? `${path.slice(0, q)}?${names.join('&')}` : path.slice(0, q);
 }
 
 interface RequestOptions {
@@ -96,12 +127,23 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     body: formData ?? (body !== undefined ? JSON.stringify(body) : undefined),
   });
 
+  // Adopt the server's correlation ID for this response before anything else
+  // can throw, so any log line emitted below — or by the caller's catch — is
+  // attributable to the exact backend request that produced it.
+  const requestId = res.headers.get(REQUEST_ID_HEADER);
+  setRequestId(requestId);
+
   if (res.status === 401 && retryOn401) {
     if (await refreshAccessToken()) {
       return request<T>(path, { ...options, retryOn401: false });
     }
     tokens.clear();
-    throw new ApiError(401, 'Session expired. Please sign in again.');
+    log.warn('session expired, tokens cleared', {
+      method,
+      path: safePath(path),
+      request_id: requestId,
+    });
+    throw new ApiError(401, 'Session expired. Please sign in again.', undefined, requestId);
   }
 
   // The server re-issues an attempt-bound token on exam start; adopt it so
@@ -118,10 +160,26 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       payload = await res.json();
       const d = (payload as { detail?: unknown }).detail;
       detail = typeof d === 'string' ? d : JSON.stringify(d ?? payload);
-    } catch {
-      /* non-JSON error body */
+    } catch (err) {
+      // Not an error in itself — a proxy or a static 502 page can legitimately
+      // answer with HTML — but it means `detail` is only the status text.
+      log.info('non-JSON error body', {
+        method,
+        path: safePath(path),
+        status: res.status,
+        request_id: requestId,
+        ...errorContext(err),
+      });
     }
-    throw new ApiError(res.status, detail, payload);
+    // 5xx is ours to fix, 4xx is the caller's; the body is deliberately absent
+    // because an answer or a code submission may be echoed back in it.
+    log[res.status >= 500 ? 'error' : 'warn']('api request failed', {
+      method,
+      path: safePath(path),
+      status: res.status,
+      request_id: requestId,
+    });
+    throw new ApiError(res.status, detail, payload, requestId);
   }
 
   return (await res.json()) as T;
@@ -175,6 +233,10 @@ export const api = {
   sections: (examId: string) => request<Section[]>(`/api/admin/exams/${examId}/sections`),
   createSection: (examId: string, payload: unknown) =>
     request<Section>(`/api/admin/exams/${examId}/sections`, { method: 'POST', body: payload }),
+  updateSection: (sectionId: string, payload: unknown) =>
+    request<Section>(`/api/admin/sections/${sectionId}`, { method: 'PATCH', body: payload }),
+  deleteSection: (sectionId: string) =>
+    request<void>(`/api/admin/sections/${sectionId}`, { method: 'DELETE' }),
   createMcq: (sectionId: string, payload: unknown) =>
     request<unknown>(`/api/admin/sections/${sectionId}/questions`, { method: 'POST', body: payload }),
   createDiGroup: (sectionId: string, payload: unknown) =>
@@ -207,6 +269,11 @@ export const api = {
     }),
   updateDiGroup: (groupId: string, payload: unknown) =>
     request<DIGroupDetail>(`/api/admin/di-groups/${groupId}`, { method: 'PATCH', body: payload }),
+  addDiGroupQuestion: (groupId: string, payload: unknown) =>
+    request<DIGroupDetail>(`/api/admin/di-groups/${groupId}/questions`, {
+      method: 'POST',
+      body: payload,
+    }),
   deleteQuestion: (questionId: string) =>
     request<void>(`/api/admin/questions/${questionId}`, { method: 'DELETE' }),
   deleteDiGroup: (groupId: string) =>
@@ -352,6 +419,16 @@ export const api = {
     request<CodingSubmissionDetail>(`/api/admin/coding-submissions/${submissionId}/re-evaluate`, {
       method: 'POST',
     }),
+
+  admins: () => request<AdminUser[]>('/api/admin/admins'),
+  createAdmin: (payload: { email: string; name: string; password: string; role: AdminRole }) =>
+    request<AdminUser>('/api/admin/admins', { method: 'POST', body: payload }),
+  updateAdmin: (
+    adminId: string,
+    payload: { name?: string; role?: AdminRole; is_active?: boolean; password?: string },
+  ) => request<AdminUser>(`/api/admin/admins/${adminId}`, { method: 'PATCH', body: payload }),
+  deleteAdmin: (adminId: string) =>
+    request<void>(`/api/admin/admins/${adminId}`, { method: 'DELETE' }),
 };
 
 /** Downloads a protected file by fetching it with the auth header, then saving the blob. */
@@ -636,6 +713,15 @@ export interface Student {
   cohort: string | null;
   is_active: boolean;
 }
+export type AdminRole = 'admin' | 'super_admin';
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  is_active: boolean;
+  created_at: string;
+}
 export interface PublishResult {
   exam_id: string;
   status: string;
@@ -697,6 +783,10 @@ export interface AttemptListItem {
   total_score: number | null;
   max_score: number | null;
   percentage: number | null;
+  aptitude_score: number;
+  aptitude_max: number;
+  coding_score: number;
+  coding_max: number;
   started_at: string | null;
   submitted_at: string | null;
   time_taken_minutes: number | null;
@@ -930,6 +1020,8 @@ export interface QuestionBankFilters {
   search?: string;
   type?: 'mcq' | 'coding' | 'di';
   difficulty?: Difficulty;
+  exam_id?: string;
+  section_id?: string;
   page?: number;
   page_size?: number;
 }

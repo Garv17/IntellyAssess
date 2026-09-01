@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type AnswerSave } from '../api';
+import { errorContext, log } from '../logger';
 
 export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'offline';
 
@@ -42,9 +43,21 @@ export function useAutoSave({ debounceMs = 1200, onExpired }: Options = {}) {
       setLastSavedAt(new Date());
     } catch (err) {
       if (err instanceof ApiError && err.status === 410) {
+        log.info('auto-save rejected: exam window closed', { request_id: err.requestId });
         onExpired?.();
         return;
       }
+      // The failure a student notices last and cares about most. Only counts
+      // and question ids are recorded — never the answers or code in `batch`.
+      log.error('auto-save failed', {
+        batch_size: batch.length,
+        pending_after: pending.current.size,
+        question_ids: batch.map((a) => a.question_id),
+        status: err instanceof ApiError ? err.status : undefined,
+        request_id: err instanceof ApiError ? err.requestId : undefined,
+        online: navigator.onLine,
+        ...errorContext(err),
+      });
       setStatus('offline');
     } finally {
       inFlight.current = false;

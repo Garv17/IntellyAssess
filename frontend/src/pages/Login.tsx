@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, tokens } from '../api';
 import logo from '../assets/logo.png';
+import { errorContext, log, maskEmail } from '../logger';
 
 function AdminLoginForm() {
   const navigate = useNavigate();
@@ -20,6 +21,9 @@ function AdminLoginForm() {
       tokens.set(pair.access_token, pair.refresh_token, 'admin');
       navigate('/admin', { replace: true });
     } catch (err) {
+      // Masked, never the raw address, and obviously never the password —
+      // enough to correlate repeated failures from one admin account.
+      log.warn('admin login failed', { email: maskEmail(email), ...errorContext(err) });
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
       setBusy(false);

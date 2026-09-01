@@ -13,6 +13,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 sync_engine = create_engine(
     settings.database_url_sync, pool_size=10, max_overflow=5, pool_pre_ping=True
@@ -28,7 +31,14 @@ def publish_live_update_sync(exam_id: str) -> None:
     try:
         sync_redis.publish(f"live:{exam_id}", "changed")
     except Exception:
-        pass
+        # Still swallowed — a Live Monitor push is advisory and must never fail
+        # the auto-submit sweep that called it. But silently: the admin's
+        # dashboard going stale during a sitting had no trace anywhere.
+        log.warning(
+            "live monitor publish failed; dashboard may be stale",
+            extra={"exam_id": exam_id},
+            exc_info=True,
+        )
 
 
 @contextmanager
@@ -37,7 +47,12 @@ def session_scope() -> Session:
     try:
         yield session
         session.commit()
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "worker database session rolled back",
+            extra={"error_type": type(exc).__name__},
+            exc_info=True,
+        )
         session.rollback()
         raise
     finally:

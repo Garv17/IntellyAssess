@@ -4,7 +4,6 @@ having to cooperate: buffer flush and the auto-submit sweeper."""
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -12,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.cache import ANSWERS, DIRTY
+from app.logging_config import get_logger
 from app.models import (
     Answer,
     AttemptStatus,
@@ -27,7 +27,7 @@ from app.models import (
 from app.sync_db import publish_live_update_sync, session_scope, sync_redis
 from app.tasks.celery_app import celery_app
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def _upsert(session, attempt_id: uuid.UUID, answers: dict[str, dict]) -> int:
@@ -78,9 +78,12 @@ def flush_answers() -> dict[str, int]:
             break
 
     if not attempt_ids:
+        # Beat fires this every autosave_flush_seconds. Logging an idle run would
+        # be ~4 lines a minute per worker saying nothing happened.
         return {"attempts": 0, "answers": 0}
 
     written = 0
+    failed = 0
     exam_ids: set[uuid.UUID] = set()
     with session_scope() as session:
         for attempt_id in attempt_ids:
@@ -95,7 +98,11 @@ def flush_answers() -> dict[str, int]:
                 with session.begin_nested():
                     written += _upsert(session, uuid.UUID(attempt_id), answers)
             except Exception:
-                log.exception("flush failed for attempt %s; re-queueing", attempt_id)
+                failed += 1
+                log.exception(
+                    "answer flush failed for attempt; re-queueing",
+                    extra={"attempt_id": attempt_id},
+                )
                 sync_redis.sadd(DIRTY, attempt_id)
 
         if written:
@@ -111,6 +118,20 @@ def flush_answers() -> dict[str, int]:
     # the answer counts this flush just wrote, not a stale pre-commit view.
     for exam_id in exam_ids:
         publish_live_update_sync(str(exam_id))
+
+    # DESIGN.md §8 calls flush lag the number that predicts an exam-day incident.
+    # `attempts` hitting the 500 cap two runs in a row is what that looks like
+    # here: the sweeper is no longer keeping up with the dirty set.
+    log.info(
+        "answer buffer flushed",
+        extra={
+            "attempts": len(attempt_ids),
+            "answers_written": written,
+            "failed_attempts": failed,
+            "exams_notified": len(exam_ids),
+            "batch_capped": len(attempt_ids) >= 500,
+        },
+    )
 
     return {"attempts": len(attempt_ids), "answers": written}
 
@@ -270,15 +291,34 @@ def auto_submit_expired() -> dict[str, int]:
     # these rows over its own connection, and would otherwise race the commit
     # above. A broker failure here leaves the submissions saved at PENDING for an
     # admin to re-run — it must never undo an auto-submit.
+    queued = 0
     if new_submission_ids:
         from app.tasks.ai_tasks import evaluate_coding_submission
 
         for submission_id in new_submission_ids:
             try:
                 evaluate_coding_submission.delay(submission_id)
+                queued += 1
             except Exception:
-                log.exception("could not queue AI evaluation for submission %s", submission_id)
+                log.exception(
+                    "could not queue AI evaluation for submission",
+                    extra={"submission_id": submission_id},
+                )
+        if queued != len(new_submission_ids):
+            log.error(
+                "some swept submissions were not queued for AI evaluation",
+                extra={"queued": queued, "expected": len(new_submission_ids)},
+            )
 
     if submitted:
-        log.info("auto-submitted %s expired attempts", submitted)
+        # Only when it actually did something — beat runs this every
+        # autosubmit_sweep_seconds and it is idle for most of an exam.
+        log.info(
+            "auto-submitted expired attempts",
+            extra={
+                "submitted": submitted,
+                "exams_affected": len(exam_ids),
+                "coding_submissions_queued": queued,
+            },
+        )
     return {"submitted": submitted}

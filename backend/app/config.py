@@ -10,6 +10,20 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
 
+    # Logging. "json" is the shippable format used everywhere but a developer's
+    # terminal; "console" is the readable one. log_sql is deliberately separate
+    # from log_level because SQL echo at INFO would bury every other line.
+    log_level: str = "INFO"
+    log_format: str = "json"
+    log_sql: bool = False
+    # "live snapshot built" fires on every Live Monitor rebuild — every answer-
+    # flush cycle for every exam with activity, so on a busy exam day it is by
+    # far the highest-volume line in the system. Off by default so it doesn't
+    # bury the events an admin tailing logs during a live exam actually wants
+    # (logins, submissions, auto-submits); flip it on when the thing you're
+    # diagnosing is "the dashboard itself is lagging or stuck".
+    log_live_monitor: bool = False
+
     # Postgres — asyncpg URL for the app, psycopg URL for Alembic/Celery
     database_url: str = "postgresql+asyncpg://exam:exam@localhost:5432/exam"
     database_url_sync: str = "postgresql+psycopg://exam:exam@localhost:5432/exam"

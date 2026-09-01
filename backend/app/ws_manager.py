@@ -7,11 +7,11 @@ separately by backend/app/pubsub.py via Redis pub/sub.
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import WebSocket
 
-log = logging.getLogger(__name__)
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 class LiveMonitorConnections:
@@ -20,12 +20,20 @@ class LiveMonitorConnections:
 
     async def connect(self, exam_id: str, ws: WebSocket) -> None:
         self._rooms.setdefault(exam_id, set()).add(ws)
+        log.info(
+            "live monitor socket connected",
+            extra={"exam_id": exam_id, "room_size": len(self._rooms[exam_id])},
+        )
 
     def disconnect(self, exam_id: str, ws: WebSocket) -> None:
         room = self._rooms.get(exam_id)
         if room is None:
             return
         room.discard(ws)
+        log.info(
+            "live monitor socket disconnected",
+            extra={"exam_id": exam_id, "room_size": len(room)},
+        )
         if not room:
             del self._rooms[exam_id]
 
@@ -37,11 +45,29 @@ class LiveMonitorConnections:
         if not room:
             return
         dead: list[WebSocket] = []
+        errors: list[str] = []
         for ws in list(room):
             try:
                 await ws.send_json(payload)
-            except Exception:
+            except Exception as exc:
+                # Expected on a closed tab, so this is not an error — but it was
+                # previously invisible, which made "the dashboard stopped
+                # updating" impossible to tell from "nothing changed".
+                # Collected rather than logged per socket: one broadcast to a
+                # room whose browsers all went away would otherwise emit a line
+                # each, all saying the same thing.
+                errors.append(type(exc).__name__)
                 dead.append(ws)
+        if dead:
+            log.info(
+                "dropped dead live monitor sockets",
+                extra={
+                    "exam_id": exam_id,
+                    "dropped": len(dead),
+                    "remaining": len(room) - len(dead),
+                    "error_types": sorted(set(errors)),
+                },
+            )
         for ws in dead:
             self.disconnect(exam_id, ws)
 

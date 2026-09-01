@@ -8,18 +8,18 @@ leaves that row intact and lands on AI_FAILED so an admin can grade it by hand.
 
 from __future__ import annotations
 
-import logging
 import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
+from app.logging_config import get_logger
 from app.models import CodingProblem, CodingSubmission, EvaluationStatus, Question, TestCase
 from app.services import ai_evaluator
 from app.sync_db import session_scope
 from app.tasks.celery_app import celery_app
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # Hidden cases become "expected behaviour" context for the evaluator. Capped
 # because the whole set can be large and the model only needs a sense of the
@@ -76,7 +76,17 @@ def _fail(session, submission_id: uuid.UUID, message: str) -> dict:
         )
         .values(status=EvaluationStatus.ai_failed, ai_error=message[:2000])
     )
-    log.warning("AI evaluation failed for submission %s: %s", submission_id, message)
+    log.warning(
+        "AI evaluation failed",
+        extra={
+            "submission_id": str(submission_id),
+            "error": message[:2000],
+            # False means an admin graded the row while the call was in flight, so
+            # the failure was discarded rather than recorded — a materially
+            # different outcome for anyone reading this line.
+            "recorded": result.rowcount == 1,
+        },
+    )
     if result.rowcount != 1:
         return {"submission_id": str(submission_id), "status": "superseded"}
     return {"submission_id": str(submission_id), "status": EvaluationStatus.ai_failed.value}
@@ -96,9 +106,21 @@ def evaluate_coding_submission(self, submission_id: str) -> dict:
         if not _claim(session, sid):
             submission = session.get(CodingSubmission, sid)
             if submission is None:
+                log.warning(
+                    "evaluation skipped", extra={"submission_id": submission_id, "reason": "not_found"}
+                )
                 return {"submission_id": submission_id, "status": "not_found"}
             # Already in flight, or already past AI evaluation. Either way this
-            # delivery has nothing to do.
+            # delivery has nothing to do. The status it was actually in is what
+            # distinguishes a harmless duplicate delivery from a stuck row.
+            log.info(
+                "evaluation skipped",
+                extra={
+                    "submission_id": submission_id,
+                    "reason": "not_claimable",
+                    "current_status": submission.status.value,
+                },
+            )
             return {"submission_id": submission_id, "status": "skipped"}
 
     # Claimed. From here on, every exit must leave a terminal status behind.

@@ -7,8 +7,17 @@ import { Identity } from '../../components/Avatar';
 import { ScoreBadge } from '../../components/Badge';
 import EmptyState from '../../components/EmptyState';
 import { SkeletonTable } from '../../components/Skeleton';
+import { errorContext, log } from '../../logger';
 
-type SortKey = 'student_name' | 'exam_title' | 'score' | 'percentage' | 'started_at' | 'submitted_at';
+type SortKey =
+  | 'student_name'
+  | 'exam_title'
+  | 'score'
+  | 'percentage'
+  | 'started_at'
+  | 'submitted_at'
+  | 'aptitude_score'
+  | 'coding_score';
 
 const PAGE_SIZE = 20;
 
@@ -51,7 +60,12 @@ export default function StudentDetails() {
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    void api.adminExams().then(setExams).catch(() => undefined);
+    // Only feeds the exam filter dropdown, so a failure is non-blocking — but
+    // it leaves the filter silently empty, which reads as "there are no exams".
+    void api
+      .adminExams()
+      .then(setExams)
+      .catch((err) => log.warn('exam filter options failed to load', errorContext(err)));
   }, []);
 
   useEffect(() => {
@@ -251,8 +265,20 @@ export default function StudentDetails() {
                   </th>
                   <th>Batch</th>
                   <th>Status</th>
+                  <th
+                    className={`sortable ${sort === 'aptitude_score' ? 'sorted' : ''}`}
+                    onClick={() => toggleSort('aptitude_score')}
+                  >
+                    Aptitude <SortIcon column="aptitude_score" />
+                  </th>
+                  <th
+                    className={`sortable ${sort === 'coding_score' ? 'sorted' : ''}`}
+                    onClick={() => toggleSort('coding_score')}
+                  >
+                    Coding <SortIcon column="coding_score" />
+                  </th>
                   <th className={`sortable ${sort === 'score' ? 'sorted' : ''}`} onClick={() => toggleSort('score')}>
-                    Score <SortIcon column="score" />
+                    Total <SortIcon column="score" />
                   </th>
                   <th className={`sortable ${sort === 'percentage' ? 'sorted' : ''}`} onClick={() => toggleSort('percentage')}>
                     % <SortIcon column="percentage" />
@@ -276,6 +302,12 @@ export default function StudentDetails() {
                     <td>{item.cohort ?? '—'}</td>
                     <td>
                       <span className={`tag ${item.status}`}>{item.status}</span>
+                    </td>
+                    <td className="num">
+                      {item.aptitude_max ? `${item.aptitude_score} / ${item.aptitude_max}` : '—'}
+                    </td>
+                    <td className="num">
+                      {item.coding_max ? `${item.coding_score} / ${item.coding_max}` : '—'}
                     </td>
                     <td className="num">
                       {item.total_score != null ? item.total_score : '—'}

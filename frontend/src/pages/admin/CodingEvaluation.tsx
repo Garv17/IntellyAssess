@@ -11,6 +11,7 @@ import { Identity } from '../../components/Avatar';
 import Badge from '../../components/Badge';
 import Markdown from '../../components/Markdown';
 import { SkeletonCard } from '../../components/Skeleton';
+import { errorContext, log } from '../../logger';
 
 const STATUS_LABEL: Record<EvaluationStatus, string> = {
   pending: 'Queued',
@@ -327,6 +328,13 @@ function SubmissionReview({
       setSaved(finalize ? 'Score finalized — it now counts toward the exam total.' : 'Draft saved.');
       onSaved();
     } catch (err) {
+      // A score that didn't persist changes a student's result, so this is an
+      // error even though the admin does see the message.
+      log.error('coding score save failed', {
+        submission_id: submissionId,
+        finalize,
+        ...errorContext(err),
+      });
       setError(err instanceof Error ? err.message : 'Could not save the score');
     } finally {
       setBusy(false);
@@ -341,6 +349,10 @@ function SubmissionReview({
       setSaved('Re-evaluation queued.');
       onSaved();
     } catch (err) {
+      log.warn('re-evaluation could not be queued', {
+        submission_id: submissionId,
+        ...errorContext(err),
+      });
       setError(err instanceof Error ? err.message : 'Could not queue a re-evaluation');
     } finally {
       setBusy(false);

@@ -2,6 +2,7 @@ import { AlertCircle, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError, api, tokens } from '../api';
+import { errorContext, log } from '../logger';
 
 export default function PinLogin() {
   const [params] = useSearchParams();
@@ -24,6 +25,8 @@ export default function PinLogin() {
       tokens.set(pair.access_token, pair.refresh_token, 'student');
       navigate('/dashboard', { replace: true });
     } catch (err) {
+      // The PIN itself is never logged — this is a live exam credential.
+      log.warn('pin login failed', { exam_id: examId, ...errorContext(err) });
       setError(err instanceof ApiError ? err.message : 'Could not sign in with that PIN.');
     } finally {
       setBusy(false);

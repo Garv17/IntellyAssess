@@ -107,6 +107,9 @@ function JsonValueInput({ label, type, value, onChange }: Props) {
             onChange(JSON.parse(next));
             setError(null);
           } catch {
+            // Deliberately not logged: this fires on every keystroke of a
+            // partially-typed value, and "the JSON isn't finished yet" is
+            // already shown to the author inline. Nothing to diagnose later.
             setError('Not valid JSON yet');
           }
         }}

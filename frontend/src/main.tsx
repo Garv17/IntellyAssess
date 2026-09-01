@@ -2,7 +2,9 @@ import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { tokens } from './api';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
+import { installGlobalErrorHandlers } from './logger';
 import Dashboard from './pages/Dashboard';
 import Exam from './pages/Exam';
 import InviteLanding from './pages/InviteLanding';
@@ -13,6 +15,7 @@ import ResumeExam from './pages/ResumeExam';
 import Submitted from './pages/Submitted';
 import Analytics from './pages/admin/Analytics';
 import AdminHome from './pages/admin/AdminHome';
+import AdminManagement from './pages/admin/AdminManagement';
 import AttemptDetail from './pages/admin/AttemptDetail';
 import CodingEvaluation from './pages/admin/CodingEvaluation';
 import ExamBuilder from './pages/admin/ExamBuilder';
@@ -28,8 +31,13 @@ function Guard({ role, children }: { role: 'student' | 'admin'; children: ReactN
   return <>{children}</>;
 }
 
+// Installed before the first render so a crash during initial mount is still
+// reported rather than lost.
+installGlobalErrorHandlers();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
+    <ErrorBoundary>
     <ToastProvider>
     <BrowserRouter>
       <Routes>
@@ -137,10 +145,19 @@ createRoot(document.getElementById('root')!).render(
             </Guard>
           }
         />
+        <Route
+          path="/admin/admins"
+          element={
+            <Guard role="admin">
+              <AdminManagement />
+            </Guard>
+          }
+        />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
     </ToastProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

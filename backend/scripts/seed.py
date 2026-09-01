@@ -16,6 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy import select
 
 from app.db import Base, SessionLocal, engine
+from app.logging_config import get_logger, mask_email, setup_logging
 from app.models import (
     Admin,
     CodingProblem,
@@ -30,6 +31,8 @@ from app.models import (
     TestCase,
 )
 from app.security import hash_password
+
+log = get_logger("scripts.seed")
 
 DEMO_ADMIN = ("admin@example.com", "Admin User", "Admin@123")
 
@@ -102,7 +105,7 @@ def _stamp_if_freshly_created(conn) -> None:
     cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     cfg.attributes["connection"] = conn
     command.stamp(cfg, "head")
-    print("alembic: stamped head (schema created from models)")
+    log.info("alembic: stamped head (schema created from models)")
 
 
 async def seed(student_count: int) -> None:
@@ -114,16 +117,24 @@ async def seed(student_count: int) -> None:
         email, name, password = DEMO_ADMIN
         admin = (await db.execute(select(Admin).where(Admin.email == email))).scalar_one_or_none()
         if admin is None:
-            admin = Admin(email=email, name=name, password_hash=hash_password(password))
+            # super_admin so the demo account can immediately reach Admin
+            # Management, rather than needing a second manual promotion step.
+            admin = Admin(
+                email=email, name=name, password_hash=hash_password(password), role="super_admin"
+            )
             db.add(admin)
             await db.flush()
-            print(f"admin created: {email} / {password}")
+            # This used to print the plaintext password to stdout, which Docker
+            # and CI capture into a log that long outlives the terminal. The
+            # credential is in SETUP.md and README.md for whoever needs to sign
+            # in, so there is nothing to trade off — it just leaves.
+            log.info("demo admin created", extra={"email_masked": mask_email(email)})
 
         existing = (
             await db.execute(select(Exam).where(Exam.title == "Demo Placement Test"))
         ).scalar_one_or_none()
         if existing is not None:
-            print("demo exam already present; skipping exam seed")
+            log.info("demo exam already present; skipping exam seed")
         else:
             exam = Exam(
                 title="Demo Placement Test",
@@ -494,7 +505,7 @@ async def seed(student_count: int) -> None:
                     )
                 )
 
-            print(f"demo exam created: {exam.id}")
+            log.info("demo exam created", extra={"exam_id": str(exam.id)})
 
         # --- Students
         existing_ids = set(
@@ -516,12 +527,17 @@ async def seed(student_count: int) -> None:
             created += 1
 
         await db.commit()
-        print(f"students created: {created}")
-        print("students sign in via magic link sent to their email, e.g. stu0001@example.com")
+        log.info("students created", extra={"created": created, "requested": student_count})
+        log.info("students sign in via magic link sent to their email, e.g. stu0001@example.com")
 
 
 if __name__ == "__main__":
+    # A standalone entry point, so it configures logging itself — app.main is
+    # never imported here.
+    setup_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--students", type=int, default=25)
     args = parser.parse_args()
+    log.info("seed starting", extra={"student_count": args.students})
     asyncio.run(seed(args.students))
+    log.info("seed complete")

@@ -1,6 +1,7 @@
 import { Copy, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, type Difficulty, type QuestionBankItem } from '../../../api';
+import { api, type Difficulty, type Exam, type QuestionBankItem, type Section } from '../../../api';
+import Markdown from '../../../components/Markdown';
 import { SkeletonText } from '../../../components/Skeleton';
 import { useToast } from '../../../components/Toast';
 
@@ -16,6 +17,10 @@ export default function QuestionBankPanel({
   const toast = useToast();
   const [search, setSearch] = useState('');
   const [difficulty, setDifficulty] = useState<Difficulty | ''>('');
+  const [exams, setExams] = useState<Exam[]>([]);
+  const [examFilter, setExamFilter] = useState('');
+  const [sections, setSections] = useState<Section[]>([]);
+  const [sectionFilter, setSectionFilter] = useState('');
   const [items, setItems] = useState<QuestionBankItem[] | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
 
@@ -24,6 +29,8 @@ export default function QuestionBankPanel({
       const page = await api.questionBank({
         search: search || undefined,
         difficulty: difficulty || undefined,
+        exam_id: examFilter || undefined,
+        section_id: sectionFilter || undefined,
         page_size: 25,
       });
       setItems(page.items);
@@ -33,9 +40,22 @@ export default function QuestionBankPanel({
   };
 
   useEffect(() => {
+    void api.adminExams().then(setExams).catch(() => undefined);
     void runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setSectionFilter('');
+    if (!examFilter) {
+      setSections([]);
+      return;
+    }
+    void api
+      .sections(examFilter)
+      .then(setSections)
+      .catch(() => setSections([]));
+  }, [examFilter]);
 
   const copy = async (item: QuestionBankItem) => {
     setCopying(item.question_id);
@@ -67,6 +87,32 @@ export default function QuestionBankPanel({
           />
         </label>
         <label>
+          Exam
+          <select value={examFilter} onChange={(e) => setExamFilter(e.target.value)}>
+            <option value="">Any</option>
+            {exams.map((exam) => (
+              <option key={exam.id} value={exam.id}>
+                {exam.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Section
+          <select
+            value={sectionFilter}
+            onChange={(e) => setSectionFilter(e.target.value)}
+            disabled={!examFilter}
+          >
+            <option value="">Any</option>
+            {sections.map((section) => (
+              <option key={section.id} value={section.id}>
+                {section.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           Difficulty
           <select value={difficulty} onChange={(e) => setDifficulty(e.target.value as Difficulty | '')}>
             <option value="">Any</option>
@@ -88,7 +134,9 @@ export default function QuestionBankPanel({
         items.map((item) => (
           <div key={item.question_id} className="bank-item">
             <div className="grow">
-              <div className="body-preview">{item.body_preview}</div>
+              <div className="body-preview">
+                <Markdown>{item.body_preview}</Markdown>
+              </div>
               <div className="bank-meta">
                 <span className="badge badge-neutral">{item.type}</span>
                 {item.difficulty && <span className={`badge difficulty-${item.difficulty}`}>{item.difficulty}</span>}
