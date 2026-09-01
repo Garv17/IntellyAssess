@@ -487,7 +487,12 @@ async def list_section_di_groups(
     result = await db.execute(
         select(DIGroup)
         .where(DIGroup.section_id == section_id)
-        .options(selectinload(DIGroup.questions).selectinload(Question.options))
+        .options(
+            selectinload(DIGroup.questions).selectinload(Question.options),
+            selectinload(DIGroup.questions)
+            .selectinload(Question.coding_problem)
+            .selectinload(CodingProblem.test_cases),
+        )
         # created_at breaks ties between groups that share an order_index (e.g.
         # several created before order_index was assigned incrementally) so the
         # list renders in a stable order across reloads instead of shuffling.
@@ -901,7 +906,7 @@ async def bulk_upload_mcq(
         "mcq bulk upload completed",
         extra={
             "section_id": str(section_id),
-            "created": created,
+            "created_count": created,
             "skipped": skipped,
             "admin_id": str(admin.id),
         },
@@ -1715,7 +1720,7 @@ async def bulk_upload_students(
     # The CSV rows carry names and email addresses, so only the counts are logged.
     log.info(
         "student bulk upload completed",
-        extra={"created": created, "skipped": skipped, "admin_id": str(admin.id)},
+        extra={"created_count": created, "skipped": skipped, "admin_id": str(admin.id)},
     )
     return BulkResult(created=created, skipped=skipped, errors=errors[:50])
 

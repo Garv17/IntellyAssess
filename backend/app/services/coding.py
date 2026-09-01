@@ -86,19 +86,19 @@ async def snapshot_submissions(db: AsyncSession, attempt: ExamAttempt) -> list[u
         .returning(CodingSubmission.id)
     )
     result = await db.execute(stmt)
-    created = list(result.scalars())
-    # candidates > created means ON CONFLICT swallowed a re-submit: the gap is the
-    # evidence that the idempotency guard worked rather than that snapshots were lost.
+    created_ids = list(result.scalars())
+    # candidates > created_count means ON CONFLICT swallowed a re-submit: the gap is
+    # the evidence that the idempotency guard worked rather than that snapshots were lost.
     log.info(
         "coding submissions snapshotted",
         extra={
             "attempt_id": str(attempt.id),
             "student_id": str(attempt.student_id),
             "candidates": len(values),
-            "created": len(created),
+            "created_count": len(created_ids),
         },
     )
-    return created
+    return created_ids
 
 
 async def has_unfinalized(db: AsyncSession, attempt_id: uuid.UUID) -> bool:
