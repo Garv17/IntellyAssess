@@ -613,6 +613,8 @@ async def question_bank(
     search: str | None = None,
     type: QuestionType | None = None,
     difficulty: str | None = None,
+    exam_id: uuid.UUID | None = None,
+    section_id: uuid.UUID | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> QuestionBankPage:
@@ -629,6 +631,10 @@ async def question_bank(
         query = query.where(Question.body_md.ilike(f"%{search}%"))
     if type is not None:
         query = query.where(Question.type == type)
+    if exam_id is not None:
+        query = query.where(Exam.id == exam_id)
+    if section_id is not None:
+        query = query.where(Section.id == section_id)
     query = query.order_by(Exam.created_at.desc(), Section.order_index, Question.order_index)
 
     result = await db.execute(query)
@@ -2644,7 +2650,16 @@ async def _score_breakdown(
     return breakdown
 
 
-AttemptSort = Literal["student_name", "exam_title", "score", "percentage", "started_at", "submitted_at"]
+AttemptSort = Literal[
+    "student_name",
+    "exam_title",
+    "score",
+    "percentage",
+    "started_at",
+    "submitted_at",
+    "aptitude_score",
+    "coding_score",
+]
 
 
 def _attempt_conditions(
@@ -2682,6 +2697,29 @@ def _attempt_conditions(
     return conditions
 
 
+def _score_by_type_subq(qtype_is_coding: bool):
+    """Correlated per-attempt sum of `Answer.score` restricted to coding
+    questions or non-coding (aptitude) questions, for use as a sort key.
+    Mirrors the bucketing in `_score_breakdown`, just expressed as SQL instead
+    of post-hoc Python so it can drive ORDER BY before pagination."""
+    type_filter = (
+        Question.type == QuestionType.coding
+        if qtype_is_coding
+        else Question.type != QuestionType.coding
+    )
+    return (
+        select(func.coalesce(func.sum(Answer.score), 0.0))
+        .select_from(Section)
+        .join(Question, Question.section_id == Section.id)
+        .outerjoin(
+            Answer, and_(Answer.question_id == Question.id, Answer.attempt_id == ExamAttempt.id)
+        )
+        .where(Section.exam_id == ExamAttempt.exam_id, type_filter)
+        .correlate(ExamAttempt)
+        .scalar_subquery()
+    )
+
+
 def _attempt_sort_expr(sort: AttemptSort, order: Literal["asc", "desc"]):
     sort_columns = {
         "student_name": Student.name,
@@ -2690,6 +2728,8 @@ def _attempt_sort_expr(sort: AttemptSort, order: Literal["asc", "desc"]):
         "percentage": ExamAttempt.total_score / func.nullif(ExamAttempt.max_score, 0),
         "started_at": ExamAttempt.started_at,
         "submitted_at": ExamAttempt.submitted_at,
+        "aptitude_score": _score_by_type_subq(qtype_is_coding=False),
+        "coding_score": _score_by_type_subq(qtype_is_coding=True),
     }
     order_expr = sort_columns[sort]
     return order_expr.desc() if order == "desc" else order_expr.asc()

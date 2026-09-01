@@ -953,6 +953,8 @@ export interface QuestionBankFilters {
   search?: string;
   type?: 'mcq' | 'coding' | 'di';
   difficulty?: Difficulty;
+  exam_id?: string;
+  section_id?: string;
   page?: number;
   page_size?: number;
 }

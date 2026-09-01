@@ -9,7 +9,15 @@ import EmptyState from '../../components/EmptyState';
 import { SkeletonTable } from '../../components/Skeleton';
 import { errorContext, log } from '../../logger';
 
-type SortKey = 'student_name' | 'exam_title' | 'score' | 'percentage' | 'started_at' | 'submitted_at';
+type SortKey =
+  | 'student_name'
+  | 'exam_title'
+  | 'score'
+  | 'percentage'
+  | 'started_at'
+  | 'submitted_at'
+  | 'aptitude_score'
+  | 'coding_score';
 
 const PAGE_SIZE = 20;
 
@@ -257,8 +265,18 @@ export default function StudentDetails() {
                   </th>
                   <th>Batch</th>
                   <th>Status</th>
-                  <th>Aptitude</th>
-                  <th>Coding</th>
+                  <th
+                    className={`sortable ${sort === 'aptitude_score' ? 'sorted' : ''}`}
+                    onClick={() => toggleSort('aptitude_score')}
+                  >
+                    Aptitude <SortIcon column="aptitude_score" />
+                  </th>
+                  <th
+                    className={`sortable ${sort === 'coding_score' ? 'sorted' : ''}`}
+                    onClick={() => toggleSort('coding_score')}
+                  >
+                    Coding <SortIcon column="coding_score" />
+                  </th>
                   <th className={`sortable ${sort === 'score' ? 'sorted' : ''}`} onClick={() => toggleSort('score')}>
                     Total <SortIcon column="score" />
                   </th>
